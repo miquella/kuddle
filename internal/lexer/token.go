@@ -4,8 +4,10 @@ package lexer
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -14,6 +16,8 @@ import (
 // character: the token's first character where that identifies it, and a
 // mnemonic letter otherwise.
 type Kind byte
+
+var errNotNumber = errors.New("not a number")
 
 const (
 	Invalid Kind = 0
@@ -101,11 +105,17 @@ func FromRaw(k Kind, raw []byte) Token {
 	return Token{Kind: k, raw: raw}
 }
 
+// FromText returns a token of kind k holding the text s, as Detach leaves one.
+func FromText(k Kind, s string) Token { return Token{Kind: k, str: s} }
+
 // FromString returns a String token with the value s.
 func FromString(s string) Token { return Token{Kind: String, str: s} }
 
 // FromInt returns a Number token with the value i.
 func FromInt(i int64) Token { return Token{Kind: Number, str: strconv.FormatInt(i, 10)} }
+
+// FromUint returns a Number token with the value u.
+func FromUint(u uint64) Token { return Token{Kind: Number, str: strconv.FormatUint(u, 10)} }
 
 // FromFloat returns a Number token with the value f. Infinities and NaN are only
 // representable in KDL v2.
@@ -206,15 +216,35 @@ func (t Token) Bool() bool { return t.Kind == True }
 // Int returns the value of a Number token as an integer.
 func (t Token) Int() (int64, error) {
 	if t.Kind != Number {
-		return 0, fmt.Errorf("token: %s is not a number", t.Kind)
+		return 0, errNotNumber
 	}
 	return parseInt(t.String())
+}
+
+// Uint returns the value of a Number token as an unsigned integer.
+func (t Token) Uint() (uint64, error) {
+	if t.Kind != Number {
+		return 0, errNotNumber
+	}
+	s := t.String()
+	sign, digits, base := splitNumber(s)
+	if base == 10 && strings.ContainsAny(digits, ".eE") {
+		return 0, fmt.Errorf("%s is not an integer", s)
+	}
+	if sign == "-" {
+		return 0, fmt.Errorf("%s is negative", s)
+	}
+	u, err := strconv.ParseUint(strings.ReplaceAll(digits, "_", ""), base, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s overflows a 64-bit unsigned integer", s)
+	}
+	return u, nil
 }
 
 // Float returns the value of a Number token as a float.
 func (t Token) Float() (float64, error) {
 	if t.Kind != Number {
-		return 0, fmt.Errorf("token: %s is not a number", t.Kind)
+		return 0, errNotNumber
 	}
 	s := t.String()
 	switch s {
@@ -225,13 +255,20 @@ func (t Token) Float() (float64, error) {
 	case "#nan":
 		return math.NaN(), nil
 	}
-	if _, _, base := splitNumber(s); base != 10 {
-		i, err := parseInt(s)
-		return float64(i), err
+	if sign, digits, base := splitNumber(s); base != 10 {
+		i, ok := new(big.Int).SetString(sign+strings.ReplaceAll(digits, "_", ""), base)
+		if !ok {
+			return 0, fmt.Errorf("invalid number %s", s)
+		}
+		f, _ := new(big.Float).SetInt(i).Float64()
+		if math.IsInf(f, 0) {
+			return 0, fmt.Errorf("%s overflows a 64-bit float", s)
+		}
+		return f, nil
 	}
 	f, err := strconv.ParseFloat(strings.ReplaceAll(s, "_", ""), 64)
 	if err != nil {
-		return 0, fmt.Errorf("token: invalid float %q: %w", s, err)
+		return 0, fmt.Errorf("%s overflows a 64-bit float", s)
 	}
 	return f, nil
 }
@@ -257,11 +294,11 @@ func splitNumber(s string) (sign, digits string, base int) {
 func parseInt(s string) (int64, error) {
 	sign, digits, base := splitNumber(s)
 	if base == 10 && strings.ContainsAny(digits, ".eE") {
-		return 0, fmt.Errorf("token: %q is not an integer", s)
+		return 0, fmt.Errorf("%s is not an integer", s)
 	}
 	i, err := strconv.ParseInt(sign+strings.ReplaceAll(digits, "_", ""), base, 64)
 	if err != nil {
-		return 0, fmt.Errorf("token: invalid integer %q: %w", s, err)
+		return 0, fmt.Errorf("%s overflows a 64-bit integer", s)
 	}
 	return i, nil
 }

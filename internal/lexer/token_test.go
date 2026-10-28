@@ -47,8 +47,22 @@ func TestNumbers(t *testing.T) {
 	if _, err := FromRaw(Number, []byte("0x8000_0000_0000_0000")).Int(); err == nil {
 		t.Error("overflow: want error")
 	}
+	if f, err := FromRaw(Number, []byte("-0x1_0000_0000_0000_0000")).Float(); err != nil || f != -0x1p64 {
+		t.Errorf("large hex: Float() = %g, %v", f, err)
+	}
 	if _, err := FromString("1").Int(); err == nil {
 		t.Error("String.Int(): want error")
+	}
+
+	for raw, want := range map[string]uint64{"0xffff_ffff_ffff_ffff": math.MaxUint64, "+12": 12} {
+		if u, err := FromRaw(Number, []byte(raw)).Uint(); err != nil || u != want {
+			t.Errorf("%s: Uint() = %d, %v; want %d", raw, u, err, want)
+		}
+	}
+	for _, raw := range []string{"-1", "1.5", "1e3"} {
+		if _, err := FromRaw(Number, []byte(raw)).Uint(); err == nil {
+			t.Errorf("%s: Uint() succeeded, want error", raw)
+		}
 	}
 }
 

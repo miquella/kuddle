@@ -99,6 +99,11 @@ func New(r io.Reader, v Version) *Lexer {
 	return &Lexer{buf: NewBuffer(r, 0), pos: Position{Line: 1, Column: 1}, version: v}
 }
 
+// SetMaxTokenSize limits the input held to scan a single token to n bytes,
+// or removes the limit if n is zero. A larger token is an error wrapping
+// ErrTooLarge.
+func (l *Lexer) SetMaxTokenSize(n int) { l.buf.maxSize = n }
+
 // Version returns the lexer's version, which is Undecided until the input
 // shows which version it is.
 func (l *Lexer) Version() Version { return l.version }
@@ -204,7 +209,7 @@ func (l *Lexer) checkVersionMarker() ([]queued, error) {
 	if l.version != Undecided && l.version != v {
 		return nil, &SyntaxError{
 			Position: start,
-			Msg:      fmt.Sprintf("document is marked as KDL v%d, but lexing KDL v%d", v, l.version),
+			Msg:      fmt.Sprintf("document is marked as KDL v%d, but reading it as KDL v%d", v, l.version),
 			Err:      ErrVersionMismatch,
 		}
 	}
@@ -252,6 +257,8 @@ func (l *Lexer) peek(i int) (rune, int, error) {
 				return 0, 0, l.errorf(i, "invalid UTF-8")
 			}
 			return eof, 0, nil
+		} else if err == ErrTooLarge {
+			return 0, 0, &SyntaxError{Position: l.pos, Msg: fmt.Sprintf("token exceeds the maximum size of %d bytes", l.buf.maxSize), Err: err}
 		} else if err != nil {
 			return 0, 0, err
 		}
