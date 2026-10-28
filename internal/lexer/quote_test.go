@@ -5,6 +5,35 @@ import (
 	"testing"
 )
 
+// TestIsIdentifier checks the fast paths of IsIdentifier against the lexer,
+// for every string of up to three characters from an alphabet of interesting
+// ones.
+func TestIsIdentifier(t *testing.T) {
+	alphabet := []string{"a", "Z", "_", "0", "9", "-", "+", ".", ":", "@", "#", ",", "<", "/", "\\", "(", "{", "[", ";", "=", "\"", " ", "\t", "\n", "\r", "\v", "\f", "\x01", "\x7f", "\u00e9"}
+	strs, prev := []string{""}, []string{""}
+	for range 3 {
+		var next []string
+		for _, s := range prev {
+			for _, c := range alphabet {
+				next = append(next, s+c)
+			}
+		}
+		strs, prev = append(strs, next...), next
+	}
+	for _, v := range []Version{V1, V2} {
+		for _, s := range strs {
+			want := lexesAsIdent(s, v)
+			switch s {
+			case "true", "false", "null", "inf", "-inf", "nan":
+				want = false
+			}
+			if got := IsIdentifier(s, v); got != want {
+				t.Errorf("v%d: IsIdentifier(%q) = %v, want %v", v, s, got, want)
+			}
+		}
+	}
+}
+
 func TestAppendQuote(t *testing.T) {
 	tests := []struct {
 		in, want string

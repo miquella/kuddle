@@ -1,6 +1,7 @@
 package kuddle_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -56,6 +57,71 @@ func TestDocumentUnmarshalKDL(t *testing.T) {
 	}
 	if err := new(kuddle.Document).UnmarshalKDL(d); err == nil {
 		t.Error("the arguments of a node: got no error")
+	}
+}
+
+func TestUnmarshalDocument(t *testing.T) {
+	input := `
+(t)a 1 k=(u8)2 "x" k=3 {
+	b #true; c
+}
+e {}
+("")f ("")1
+`
+	want := kuddle.Document{Nodes: []kuddle.Node{
+		{Type: new("t"), Name: "a", Entries: []kuddle.Entry{
+			kuddle.Arg(num("1")),
+			kuddle.Prop("k", typed("u8", num("2"))),
+			kuddle.Arg(kdltext.String("x")),
+			kuddle.Prop("k", num("3")),
+		}, Children: []kuddle.Node{
+			{Name: "b", Entries: []kuddle.Entry{kuddle.Arg(kdltext.Bool(true))}},
+			{Name: "c"},
+		}},
+		{Name: "e", Children: []kuddle.Node{}},
+		{Type: new(""), Name: "f", Entries: []kuddle.Entry{kuddle.Arg(typed("", num("1")))}},
+	}}
+	var got kuddle.Document
+	if err := kuddle.Unmarshal([]byte(input), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(&want) {
+		t.Errorf("got  %+v\nwant %+v", got, want)
+	}
+
+	var v struct {
+		A kuddle.Document `kdl:"a"`
+	}
+	err := kuddle.Unmarshal([]byte(input), &v)
+	if want := "kuddle: cannot unmarshal node a (line 2, column 1) into Go kuddle.Document: a Document holds only nodes, not arguments or properties"; err == nil || err.Error() != want {
+		t.Errorf("a node with arguments:\ngot  %v\nwant %s", err, want)
+	}
+}
+
+func TestUnmarshalSyntaxError(t *testing.T) {
+	var doc kuddle.Document
+	err := kuddle.Unmarshal([]byte("a {\n  b = 1\n}"), &doc)
+	if se, ok := errors.AsType[*kdltext.SyntacticError](err); !ok || se.Line != 2 {
+		t.Errorf("err = %v, want a SyntacticError on line 2", err)
+	}
+}
+
+func TestUnmarshalDecodeChildren(t *testing.T) {
+	dec := kdltext.NewDecoder(strings.NewReader("a { b; c }\nd"))
+	if tok, err := dec.ReadToken(); err != nil || tok.Name() != "a" {
+		t.Fatalf("ReadToken() = %v, %v", tok, err)
+	}
+	var doc kuddle.Document
+	if err := kuddle.UnmarshalDecode(dec, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Nodes) != 2 || doc.Nodes[1].Name != "c" {
+		t.Errorf("got %+v, want nodes b and c", doc)
+	}
+	for _, want := range []kdltext.Kind{kdltext.KindEnd, kdltext.KindNode} {
+		if tok, err := dec.ReadToken(); err != nil || tok.Kind != want {
+			t.Errorf("ReadToken() = %v, %v; want %v", tok, err, want)
+		}
 	}
 }
 

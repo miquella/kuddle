@@ -11,6 +11,11 @@ import (
 // Document is a KDL document. It keeps the order of the nodes, and of the
 // arguments and properties of each node, including repeated properties.
 // Comments and formatting are not kept.
+//
+// Don't embed a Document in a struct, with or without a tag. Embedding
+// promotes its UnmarshalKDL method to the struct, which then unmarshals as a
+// Document, and its other fields are ignored. Hold a Document in a named
+// field instead.
 type Document struct {
 	Nodes []Node
 }
