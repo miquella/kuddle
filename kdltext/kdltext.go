@@ -58,6 +58,31 @@ func WithVersion(v Version) Options {
 	return &kdlopts.Struct{Present: kdlopts.Version, Version: int(v)}
 }
 
+// WithNewline sets the line ending of the lines an Encoder writes, which is
+// "\n" or "\r\n". The default is "\n". The text of comments and strings is
+// written as it is, whatever newlines it holds.
+//
+// WithNewline panics if newline is neither.
+func WithNewline(newline string) Options {
+	if newline != "\n" && newline != "\r\n" {
+		panic(fmt.Sprintf("kdltext: invalid newline %q", newline))
+	}
+	return &kdlopts.Struct{Present: kdlopts.Newline, Newline: newline}
+}
+
+// WithIndent sets the indentation of child nodes written by an Encoder, which
+// is four spaces by default. It applies to both KDL versions.
+//
+// WithIndent panics if indent contains characters other than spaces and tabs.
+func WithIndent(indent string) Options {
+	for _, c := range indent {
+		if c != ' ' && c != '\t' {
+			panic("kdltext: indent must only contain spaces and tabs")
+		}
+	}
+	return &kdlopts.Struct{Present: kdlopts.Indent, Indent: indent}
+}
+
 // WithMaxTokenSize sets the maximum number of bytes of input that a Decoder
 // holds to read a single token, such as a string or comment, which is
 // unlimited by default or if n is zero. Reading a larger token is an error

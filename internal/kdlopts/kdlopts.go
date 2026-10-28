@@ -22,6 +22,8 @@ type Bits uint32
 
 const (
 	Version Bits = 1 << iota
+	Indent
+	Newline
 	DiscardUnknown
 	MaxTokenSize
 
@@ -36,6 +38,8 @@ type Struct struct {
 	Flags   Bits // values of the boolean options that are set
 
 	Version      int
+	Indent       string
+	Newline      string
 	MaxTokenSize int
 }
 
@@ -62,6 +66,12 @@ func (s *Struct) Join(opts ...Options) {
 		s.Flags = s.Flags&^(src.Present&boolOptions) | src.Flags
 		if src.Present&Version != 0 {
 			s.Version = src.Version
+		}
+		if src.Present&Indent != 0 {
+			s.Indent = src.Indent
+		}
+		if src.Present&Newline != 0 {
+			s.Newline = src.Newline
 		}
 		if src.Present&MaxTokenSize != 0 {
 			s.MaxTokenSize = src.MaxTokenSize
