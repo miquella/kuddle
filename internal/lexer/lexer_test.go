@@ -316,3 +316,33 @@ func TestLongWhitespace(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPositions(t *testing.T) {
+	input := "a\r\nb\u2028\"ü\" c\n  \"\\q\""
+	l := lexer.New(strings.NewReader(input), lexer.V2)
+	var got []lexer.Position
+	for {
+		tok, err := l.NextToken()
+		if err != nil {
+			var se *lexer.SyntaxError
+			if !errors.As(err, &se) {
+				t.Fatal(err)
+			}
+			got = append(got, se.Position)
+			break
+		}
+		if tok.Kind != lexer.Whitespace && tok.Kind != lexer.Newline {
+			got = append(got, l.Pos())
+		}
+	}
+	want := []lexer.Position{
+		{0, 1, 1},  // a
+		{3, 2, 1},  // b
+		{7, 3, 1},  // "ü"
+		{12, 3, 5}, // c
+		{17, 4, 4}, // the invalid escape
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}

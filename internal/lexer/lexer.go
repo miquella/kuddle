@@ -26,15 +26,42 @@ const (
 // version marker conflicts with the lexer's version.
 var ErrVersionMismatch = errors.New("version marker does not match lexer version")
 
+// Position is a location in the input.
+type Position struct {
+	Offset int64 // byte offset, starting at 0
+	Line   int   // line number, starting at 1
+	Column int   // column number in code points, starting at 1
+}
+
+// advance returns the position after the text b, which starts at p. A CRLF
+// pair is a single newline, so a '\n' that follows a '\r' is not counted.
+func (p Position) advance(b []byte, v Version) Position {
+	for i := 0; i < len(b); {
+		r, size := utf8.DecodeRune(b[i:])
+		crlf := r == '\n' && i > 0 && b[i-1] == '\r'
+		switch {
+		case crlf:
+		case IsNewline(r) && !(r == '\v' && v == V1):
+			p.Line++
+			p.Column = 1
+		default:
+			p.Column++
+		}
+		i += size
+	}
+	p.Offset += int64(len(b))
+	return p
+}
+
 // SyntaxError reports invalid input.
 type SyntaxError struct {
-	Offset int64 // byte offset in the input
-	Msg    string
-	Err    error // underlying error, if any
+	Position
+	Msg string
+	Err error // underlying error, if any
 }
 
 func (e *SyntaxError) Error() string {
-	return fmt.Sprintf("lexer: syntax error at offset %d: %s", e.Offset, e.Msg)
+	return fmt.Sprintf("lexer: syntax error at line %d, column %d: %s", e.Line, e.Column, e.Msg)
 }
 
 func (e *SyntaxError) Unwrap() error { return e.Err }
@@ -53,22 +80,42 @@ func (e *SyntaxError) Unwrap() error { return e.Err }
 // version decides it; where a construct is valid (but different) in both,
 // v2 is preferred: a token starting with '#', and a string starting with """.
 type Lexer struct {
-	buf    *Buffer
-	offset int64 // input offset of the start of the pending data
+	buf *Buffer
+	pos Position // position of the start of the pending data
+	tok Position // position of the last token returned by NextToken
 
 	version Version
 	started bool
-	queue   []Token // tokens read ahead by checkVersionMarker
+	queue   []queued // tokens read ahead by checkVersionMarker
+}
+
+type queued struct {
+	tok Token
+	pos Position
 }
 
 // New returns a lexer for KDL version v, or Undecided to detect it.
 func New(r io.Reader, v Version) *Lexer {
-	return &Lexer{buf: NewBuffer(r, 0), version: v}
+	return &Lexer{buf: NewBuffer(r, 0), pos: Position{Line: 1, Column: 1}, version: v}
 }
 
 // Version returns the lexer's version, which is Undecided until the input
 // shows which version it is.
 func (l *Lexer) Version() Version { return l.version }
+
+// Use reports whether syntax specific to version v is allowed, committing an
+// undecided lexer to v. It must only be called once that syntax is present in
+// the input.
+func (l *Lexer) Use(v Version) bool {
+	if l.version == Undecided {
+		l.version = v
+	}
+	return l.version == v
+}
+
+// Pos returns the position of the start of the last token returned by
+// NextToken.
+func (l *Lexer) Pos() Position { return l.tok }
 
 // NextToken returns the next token. The token's raw bytes are backed by the
 // lexer's buffer and are only valid until the next call to NextToken.
@@ -82,10 +129,12 @@ func (l *Lexer) NextToken() (Token, error) {
 		l.queue = toks
 	}
 	if len(l.queue) > 0 {
-		t := l.queue[0]
+		q := l.queue[0]
 		l.queue = l.queue[1:]
-		return t, nil
+		l.tok = q.pos
+		return q.tok, nil
 	}
+	l.tok = l.pos
 	return l.scan()
 }
 
@@ -105,22 +154,23 @@ func (l *Lexer) scan() (Token, error) {
 //	bom? '/-' unicode-space* 'kdl-version' unicode-space+ ('1' | '2') unicode-space* newline
 //
 // It returns the tokens it read, to be emitted before any others.
-func (l *Lexer) checkVersionMarker() ([]Token, error) {
-	var toks []Token
+func (l *Lexer) checkVersionMarker() ([]queued, error) {
+	var toks []queued
 	var v Version
-	var start int64
+	var start Position
 	for step := 0; step < 4; {
 		// Reading the next token invalidates the raw bytes of the last one.
 		if n := len(toks); n > 0 {
-			toks[n-1] = toks[n-1].Clone()
+			toks[n-1].tok = toks[n-1].tok.Clone()
 		}
+		pos := l.pos
 		t, err := l.scan()
 		if err != nil {
 			// Nothing was consumed, so the error is reported again when the
 			// token is read normally.
 			return toks, nil
 		}
-		toks = append(toks, t)
+		toks = append(toks, queued{t, pos})
 
 		raw := string(t.Raw())
 		matched := false
@@ -130,7 +180,7 @@ func (l *Lexer) checkVersionMarker() ([]Token, error) {
 			matched = step > 0 || (len(toks) == 1 && raw == string(BOM))
 		case step == 0:
 			matched = t.Kind == Slashdash
-			start = l.offset - int64(len(raw))
+			start = pos
 		case step == 1:
 			matched = t.Kind == Ident && raw == "kdl-version"
 		case step == 2:
@@ -153,32 +203,25 @@ func (l *Lexer) checkVersionMarker() ([]Token, error) {
 
 	if l.version != Undecided && l.version != v {
 		return nil, &SyntaxError{
-			Offset: start,
-			Msg:    fmt.Sprintf("document is marked as KDL v%d, but lexing KDL v%d", v, l.version),
-			Err:    ErrVersionMismatch,
+			Position: start,
+			Msg:      fmt.Sprintf("document is marked as KDL v%d, but lexing KDL v%d", v, l.version),
+			Err:      ErrVersionMismatch,
 		}
 	}
 	l.version = v
 	return toks, nil
 }
 
-// use reports whether syntax specific to version v is allowed, committing an
-// undecided lexer to v. It must only be called once that syntax is present in
-// the input.
-func (l *Lexer) use(v Version) bool {
-	if l.version == Undecided {
-		l.version = v
-	}
-	return l.version == v
-}
-
 func (l *Lexer) consume(n int) {
+	l.pos = l.pos.advance(l.buf.Pending()[:n], l.version)
 	l.buf.Consume(n)
-	l.offset += int64(n)
 }
 
 func (l *Lexer) errorf(off int, format string, args ...any) error {
-	return &SyntaxError{Offset: l.offset + int64(off), Msg: fmt.Sprintf(format, args...)}
+	return &SyntaxError{
+		Position: l.pos.advance(l.buf.Pending()[:off], l.version),
+		Msg:      fmt.Sprintf(format, args...),
+	}
 }
 
 // peek returns the rune at offset i of the pending data and its size, reading
@@ -198,8 +241,8 @@ func (l *Lexer) peek(i int) (rune, int, error) {
 				}
 			}
 			// A BOM is allowed at the start of the document, and anywhere in v1.
-			atStart := l.offset+int64(i) == 0
-			if IsDisallowed(r) && !(r == BOM && atStart) && !l.use(V1) {
+			atStart := l.pos.Offset+int64(i) == 0
+			if IsDisallowed(r) && !(r == BOM && atStart) && !l.Use(V1) {
 				return 0, 0, l.errorf(i, "disallowed character %U", r)
 			}
 			return r, size, nil
@@ -235,7 +278,7 @@ func isWhitespace(r rune) bool { return IsSpace(r) || r == BOM }
 // is handled by the caller.
 func (l *Lexer) isNewline(r rune) bool {
 	if r == '\v' {
-		return l.use(V2)
+		return l.Use(V2)
 	}
 	return IsNewline(r)
 }
@@ -251,9 +294,9 @@ func (l *Lexer) isIdentChar(r rune) bool {
 	case '\\', '/', '(', ')', '{', '}', ';', '[', ']', '=', '"', BOM:
 		return false
 	case '<', '>', ',':
-		return l.use(V2)
+		return l.Use(V2)
 	case '#':
-		return l.use(V1)
+		return l.Use(V1)
 	}
 	return !IsSpace(r) && !l.isNewline(r)
 }
@@ -304,11 +347,11 @@ func (l *Lexer) scanToken() (Kind, int, error) {
 	case 'r':
 		if raw, err := l.isRawStringStart(1); err != nil {
 			return Invalid, 0, err
-		} else if raw && l.use(V1) {
+		} else if raw && l.Use(V1) {
 			return l.scanRawString(V1)
 		}
 	case '#':
-		if l.use(V2) {
+		if l.Use(V2) {
 			return l.scanHash()
 		}
 	}
@@ -376,7 +419,7 @@ func (l *Lexer) scanIdent() (Kind, int, error) {
 	}
 	switch string(ident) {
 	case "true", "false", "null", "inf", "-inf", "nan":
-		if !l.use(V1) {
+		if !l.Use(V1) {
 			return Invalid, 0, l.errorf(0, "bare keyword %s (use #%s)", Quote(string(ident)), ident)
 		}
 	}
@@ -386,7 +429,7 @@ func (l *Lexer) scanIdent() (Kind, int, error) {
 	if rest[0] == '+' || rest[0] == '-' {
 		rest = rest[1:]
 	}
-	if len(rest) >= 2 && rest[0] == '.' && isDigit(rune(rest[1])) && !l.use(V1) {
+	if len(rest) >= 2 && rest[0] == '.' && isDigit(rune(rest[1])) && !l.Use(V1) {
 		return Invalid, 0, l.errorf(0, "invalid identifier %s (looks like a number)", Quote(string(ident)))
 	}
 	return kind, n, nil
@@ -436,7 +479,7 @@ func (l *Lexer) scanString() (Kind, int, error) {
 	delim := `"`
 	if multi, err := l.matchAt(0, `"""`); err != nil {
 		return Invalid, 0, err
-	} else if multi && l.use(V2) {
+	} else if multi && l.Use(V2) {
 		delim = `"""`
 		if err := l.expectNewline(3); err != nil {
 			return Invalid, 0, err
@@ -463,7 +506,7 @@ func (l *Lexer) scanString() (Kind, int, error) {
 			if size, err = l.scanEscape(i); err != nil {
 				return Invalid, 0, err
 			}
-		case delim == `"` && l.isNewline(c) && !l.use(V1):
+		case delim == `"` && l.isNewline(c) && !l.Use(V1):
 			return Invalid, 0, l.errorf(i, "newline in single-line string")
 		}
 		i += size
@@ -480,17 +523,17 @@ func (l *Lexer) scanEscape(i int) (int, error) {
 	case '"', '\\', 'b', 'f', 'n', 'r', 't':
 		return 2, nil
 	case '/':
-		if l.use(V1) {
+		if l.Use(V1) {
 			return 2, nil
 		}
 	case 's':
-		if l.use(V2) {
+		if l.Use(V2) {
 			return 2, nil
 		}
 	case 'u':
 		return l.scanUnicodeEscape(i)
 	default:
-		if (IsSpace(c) || l.isNewline(c)) && l.use(V2) {
+		if (IsSpace(c) || l.isNewline(c)) && l.Use(V2) {
 			return l.scanWhitespaceEscape(i)
 		}
 	}
