@@ -689,6 +689,9 @@ func TestBadTags(t *testing.T) {
 			A int `kdl:",name"`
 		}{}, "a name field must be a string"},
 		{&struct {
+			A int `kdl:",comment"`
+		}{}, "a comment field must be a string"},
+		{&struct {
 			A []kdltext.Value `kdl:",entries"`
 		}{}, "an entries field must be a slice of kuddle.Entry"},
 		{&struct {

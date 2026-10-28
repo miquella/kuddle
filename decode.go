@@ -85,6 +85,20 @@ type decoder struct {
 	in     *kdltext.Decoder
 	ignore bool          // whether what a struct has no field for is ignored
 	path   []pathSegment // the nodes being decoded
+
+	// above holds the comments read since the last node ended or began, which
+	// come before the next node: its comment field holds them, or, for the
+	// first child of a node, the header comment field of that node does. It is
+	// emptied when a node begins or ends.
+	above []kdltext.Comment
+}
+
+// keep adds the comment of t, a KindComment token, to d.above, unless it is a
+// slash-dashed part, which is not a comment in the text sense.
+func (d *decoder) keep(t kdltext.Token) {
+	if t.Comment.Kind != kdltext.CommentSlashdash {
+		d.above = append(d.above, t.Comment)
+	}
 }
 
 // nodeStart is what is read at the start of a node, from its KindNode token.
@@ -96,7 +110,12 @@ type nodeStart struct {
 	name string
 	pos  kdltext.Position
 
-	comment kdltext.Comment // the comment directly above the node
+	// The comments above the node: the ones before the comment directly above
+	// it, which may be none, and the one directly above it, which is no
+	// comment if its kind is zero. above is only good until the next token is
+	// read, as the decoder reuses it.
+	above   []kdltext.Comment
+	comment kdltext.Comment
 
 	root, inNode bool
 }
@@ -105,7 +124,8 @@ type nodeStart struct {
 // the path. The caller must call leave once the child is decoded.
 func (d *decoder) child() *nodeStart {
 	t, _ := d.in.ReadToken()
-	c := &nodeStart{typ: t.Value.Type, name: t.Name(), pos: d.in.Pos(), comment: t.Comment}
+	c := &nodeStart{typ: t.Value.Type, name: t.Name(), pos: d.in.Pos(), above: d.above, comment: t.Comment}
+	d.above = d.above[:0]
 	d.path = append(d.path, pathSegment{c.name, -1})
 	return c
 }
@@ -116,12 +136,16 @@ func (d *decoder) leave() { d.path = d.path[:len(d.path)-1] }
 // a slice or array.
 func (d *decoder) element(i int) { d.path[len(d.path)-1].index = i }
 
-// peek returns the kind of the next token, reading and discarding the
-// comment tokens before it, which only the values holding whole nodes keep.
+// peek returns the kind of the next token, reading the comment tokens before
+// it. Those between nodes are kept in d.above, and the rest are discarded, as
+// only the values holding whole nodes keep them.
 func (d *decoder) peek() kdltext.Kind {
 	k := d.in.PeekKind()
 	for k == kdltext.KindComment || k == kdltext.KindEntryComment {
-		d.in.ReadToken()
+		t, _ := d.in.ReadToken()
+		if k == kdltext.KindComment {
+			d.keep(t)
+		}
 		k = d.in.PeekKind()
 	}
 	return k
@@ -144,6 +168,8 @@ func (d *decoder) atEnd(ns *nodeStart) bool {
 // token, or the end of the document. The KindEnd token of a root, whose
 // contents UnmarshalDecode reads, is left to be read.
 func (d *decoder) end(ns *nodeStart) error {
+	// The comments left in the node are not above whatever comes after it.
+	d.above = d.above[:0]
 	switch d.peek() {
 	case kdltext.KindEnd:
 		if !ns.root {
@@ -261,7 +287,8 @@ func isValuePointer(t reflect.Type) bool {
 	return t.Kind() != reflect.Interface
 }
 
-// startFields sets the name and type fields of the struct v from ns.
+// startFields sets the name, type and comment fields of the struct v from
+// ns.
 func (d *decoder) startFields(ns *nodeStart, v reflect.Value) error {
 	fs, err := cachedFields(v.Type())
 	if err != nil {
@@ -276,7 +303,32 @@ func (d *decoder) startFields(ns *nodeStart, v reflect.Value) error {
 	if fs.typ != nil {
 		setType(fieldByIndex(v, fs.typ.index), ns.typ)
 	}
+	if fs.comment != nil {
+		setBlocks(fieldByIndex(v, fs.comment.index), ns.above, ns.comment)
+	}
 	return nil
+}
+
+// commentText returns the text of c, as a string field holds it: without the
+// space that sets it off from its markers, or the spaces after it.
+func commentText(c kdltext.Comment) string {
+	if c.Kind != kdltext.CommentLine {
+		return strings.TrimSpace(c.Text)
+	}
+	lines := strings.Split(c.Text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(strings.TrimPrefix(line, " "), " \t")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// setComment sets fv, a string or kdltext.Comment field, to the comment c.
+func setComment(fv reflect.Value, c kdltext.Comment) {
+	if fv.Type() == commentType {
+		fv.Set(reflect.ValueOf(c))
+	} else {
+		fv.SetString(commentText(c))
+	}
 }
 
 // asUnmarshaler returns v's Unmarshaler, if it has one.
@@ -499,17 +551,26 @@ func appendEntry(entries reflect.Value, e Entry) {
 // structChildren decodes the children of ns into the struct v, and the
 // comment entries after them into entries, if valid.
 func (d *decoder) structChildren(ns *nodeStart, v reflect.Value, fs *structFields, slice func(*field) reflect.Value, nodes *mapSetter, entries reflect.Value) error {
+	first := true
 	for {
 		// Peeked directly, as d.peek would pass over the comment entries.
 		if k := d.in.PeekKind(); k == kdltext.KindComment || k == kdltext.KindEntryComment {
 			t, _ := d.in.ReadToken()
 			if k == kdltext.KindEntryComment {
 				appendEntry(entries, Entry{Kind: EntryComment, Comment: t.Comment})
+			} else {
+				d.keep(t)
 			}
 			continue
 		}
 		if !d.nextChild() {
 			break
+		}
+		if first {
+			// The comments before the first child are the head of the
+			// children, which a headercomment field takes from the child.
+			first = false
+			d.takeHeader(v, fs)
 		}
 		c := d.child()
 		var err error
@@ -530,7 +591,21 @@ func (d *decoder) structChildren(ns *nodeStart, v reflect.Value, fs *structField
 			return err
 		}
 	}
+	if first {
+		// There are no children, so all the comments in the block, if it has
+		// any, are its head.
+		d.takeHeader(v, fs)
+	}
 	return d.end(ns)
+}
+
+// takeHeader sets the headercomment field of the struct v, if it has one, to
+// the comments in d.above, which are then no longer above a node.
+func (d *decoder) takeHeader(v reflect.Value, fs *structFields) {
+	if fs.headerComment != nil {
+		setBlocks(fieldByIndex(v, fs.headerComment.index), d.above, kdltext.Comment{})
+		d.above = d.above[:0]
+	}
 }
 
 // fieldValue decodes the next token, the given entry of ns, into v, which

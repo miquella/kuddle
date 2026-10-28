@@ -14,27 +14,31 @@ import (
 type fieldKind int
 
 const (
-	fieldChild    fieldKind = iota // the child nodes with the field's name
-	fieldArg                       // the next argument
-	fieldArgs                      // the remaining arguments
-	fieldProp                      // the property with the field's name
-	fieldProps                     // the remaining properties
-	fieldEntries                   // the remaining arguments, properties and comments
-	fieldChildren                  // the remaining child nodes
-	fieldName                      // the node's name
-	fieldType                      // the node's type annotation
+	fieldChild         fieldKind = iota // the child nodes with the field's name
+	fieldArg                            // the next argument
+	fieldArgs                           // the remaining arguments
+	fieldProp                           // the property with the field's name
+	fieldProps                          // the remaining properties
+	fieldEntries                        // the remaining arguments, properties and comments
+	fieldChildren                       // the remaining child nodes
+	fieldName                           // the node's name
+	fieldType                           // the node's type annotation
+	fieldComment                        // the comments above the node
+	fieldHeaderComment                  // the comments at the head of the node's children
 )
 
 var fieldKinds = map[string]fieldKind{
-	"child":    fieldChild,
-	"arg":      fieldArg,
-	"args":     fieldArgs,
-	"prop":     fieldProp,
-	"props":    fieldProps,
-	"entries":  fieldEntries,
-	"children": fieldChildren,
-	"name":     fieldName,
-	"type":     fieldType,
+	"child":         fieldChild,
+	"arg":           fieldArg,
+	"args":          fieldArgs,
+	"prop":          fieldProp,
+	"props":         fieldProps,
+	"entries":       fieldEntries,
+	"children":      fieldChildren,
+	"name":          fieldName,
+	"type":          fieldType,
+	"comment":       fieldComment,
+	"headercomment": fieldHeaderComment,
 }
 
 // field is a struct field that corresponds to part of a node.
@@ -56,14 +60,16 @@ type field struct {
 type structFields struct {
 	all []*field // in declaration order
 
-	args      []*field
-	restArgs  *field
-	props     map[string]*field
-	restProps *field
-	entries   *field
-	children  map[string]*field
-	restNodes *field
-	name, typ *field
+	args          []*field
+	restArgs      *field
+	props         map[string]*field
+	restProps     *field
+	entries       *field
+	children      map[string]*field
+	restNodes     *field
+	name, typ     *field
+	comment       *field
+	headerComment *field
 }
 
 var fieldCache sync.Map // reflect.Type -> fieldsResult
@@ -162,7 +168,7 @@ func (fs *structFields) add(t reflect.Type, index []int) error {
 	return nil
 }
 
-const kindOptions = "child, arg, args, prop, props, entries, children, name and type"
+const kindOptions = "child, arg, args, prop, props, entries, children, name, type, comment and headercomment"
 
 // index records f in the lookup fields of fs, checking that its type suits
 // its kind.
@@ -239,6 +245,17 @@ func (fs *structFields) index(f *field) error {
 			return fmt.Errorf("a name field must be a string, not %s", t)
 		}
 		return single(&fs.name)
+	case fieldComment, fieldHeaderComment:
+		if t == commentType {
+			return fmt.Errorf("a %s field can't be a single kdltext.Comment, as there can be several comments: use a string, a []string or a []kdltext.Comment", kindName(f.kind))
+		}
+		if !isCommentBlocks(t) {
+			return fmt.Errorf("a %s field must be a string, a []string or a []kdltext.Comment, not %s", kindName(f.kind), t)
+		}
+		if f.kind == fieldComment {
+			return single(&fs.comment)
+		}
+		return single(&fs.headerComment)
 	case fieldType:
 		if t.Kind() != reflect.String && t != reflect.TypeFor[*string]() {
 			return fmt.Errorf("a type field must be a string or *string, not %s", t)
@@ -269,7 +286,7 @@ func checkNode(t reflect.Type) error {
 		case t == entryType:
 			return errors.New("an Entry is an argument, property or comment, not a node, and belongs in an entries field")
 		case t == commentType:
-			return errors.New("a kdltext.Comment is a comment, not a node")
+			return errors.New("a kdltext.Comment is a comment, not a node, and belongs in a comment or headercomment field")
 		case t.Kind() == reflect.Pointer:
 			t = t.Elem()
 		case isValueType(t) || hasMethods(t):

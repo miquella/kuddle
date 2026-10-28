@@ -93,6 +93,10 @@ type encoder struct {
 	// seen holds the pointers, maps and slices being marshaled, once nodes
 	// are nested deeper than startDetectingCyclesAfter.
 	seen map[visit]struct{}
+
+	// blocks is where the comments of a comment or headercomment field are
+	// put together. It is only used until they have been written.
+	blocks []kdltext.Comment
 }
 
 // startDetectingCyclesAfter is the nesting of nodes past which Marshal checks
@@ -213,7 +217,7 @@ func (e *encoder) node(v reflect.Value, name string, own, root bool) error {
 			return e.out.WriteToken(kdltext.Token{Kind: kdltext.KindComment, Comment: n.Comment})
 		}
 	}
-	if err := e.start(e.nodeToken(v, name, own, root), root); err != nil {
+	if err := e.startNode(v, name, own, root); err != nil {
 		return err
 	}
 	if err := e.contents(v, root); err != nil {
@@ -223,10 +227,24 @@ func (e *encoder) node(v reflect.Value, name string, own, root bool) error {
 	return e.end(root, v.Type() == nodeType && pointerTo[Node](v).Children != nil)
 }
 
-// nodeToken returns the KindNode token of the node for v, which is not a
-// pointer or interface, named as node describes.
-func (e *encoder) nodeToken(v reflect.Value, name string, own, root bool) kdltext.Token {
-	t := kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(name)}
+// startNode writes the comments above the node for v, which is not a pointer
+// or interface, and then its KindNode token, named as node describes. When a
+// comment field holds several comments, the last is attached to the node, and
+// the ones before it are written as comment nodes.
+func (e *encoder) startNode(v reflect.Value, name string, own, root bool) error {
+	t, above := e.nodeToken(v, name, own, root)
+	for _, c := range above {
+		if err := e.out.WriteToken(kdltext.Token{Kind: kdltext.KindComment, Comment: c}); err != nil {
+			return e.error(nil, err)
+		}
+	}
+	return e.start(t, root)
+}
+
+// nodeToken returns the KindNode token of the node for v, and the comments
+// that go above it as comment nodes, before the comment on the token.
+func (e *encoder) nodeToken(v reflect.Value, name string, own, root bool) (t kdltext.Token, above []kdltext.Comment) {
+	t = kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(name)}
 	switch {
 	case root:
 	case v.Type() == nodeType:
@@ -246,8 +264,16 @@ func (e *encoder) nodeToken(v reflect.Value, name string, own, root bool) kdltex
 		if fv, ok := structField(v, fs.typ); ok {
 			t.Value.Type = typeOf(fv)
 		}
+		if fv, ok := structField(v, fs.comment); ok {
+			above = blocksOf(fv, e.blocks[:0])
+			e.blocks = above
+			// A slash-dashed part is never the comment of a node.
+			if n := len(above); n > 0 && above[n-1].Kind != kdltext.CommentSlashdash {
+				t.Comment, above = above[n-1], above[:n-1]
+			}
+		}
 	}
-	return t
+	return t, above
 }
 
 // contents writes the contents of the node for v, which is not a pointer or
@@ -305,7 +331,7 @@ func (e *encoder) marshaler(m Marshaler, v reflect.Value, name string, own, root
 		}
 		v = v.Elem()
 	}
-	if err := e.start(e.nodeToken(v, name, own, root), root); err != nil {
+	if err := e.startNode(v, name, own, root); err != nil {
 		return err
 	}
 	depth := e.out.StackDepth()
@@ -352,6 +378,15 @@ func structField(v reflect.Value, f *field) (reflect.Value, bool) {
 		return reflect.Value{}, false
 	}
 	return fv, true
+}
+
+// commentOf returns the comment held by v, a kdltext.Comment or a string of
+// line comment text, which is no comment if empty.
+func commentOf(v reflect.Value) kdltext.Comment {
+	if v.Type() == commentType {
+		return v.Interface().(kdltext.Comment)
+	}
+	return lineCommentOf(v.String())
 }
 
 func (e *encoder) structContents(v reflect.Value, root bool) error {
@@ -420,6 +455,16 @@ func (e *encoder) structContents(v reflect.Value, root bool) error {
 		}
 		if err := e.mapProps(entries, fieldValue); err != nil {
 			return err
+		}
+	}
+
+	// The comments at the head of the children come before the first child.
+	if fv, ok := field(fs.headerComment); ok {
+		e.blocks = blocksOf(fv, e.blocks[:0])
+		for _, c := range e.blocks {
+			if err := e.out.WriteToken(kdltext.Token{Kind: kdltext.KindComment, Comment: c}); err != nil {
+				return e.error(fv.Type(), err)
+			}
 		}
 	}
 

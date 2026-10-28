@@ -1,6 +1,7 @@
 package kuddle_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -161,5 +162,95 @@ func TestStructEntriesComments(t *testing.T) {
 	}
 	if want := "n 1 /* b */ 2 /- 3 \\ // opens\n    /- { y; } {\n    - 4\n}\n"; string(out) != want {
 		t.Errorf("got\n%s\nwant\n%s", out, want)
+	}
+}
+
+type docConfig struct {
+	Server docServer `kdl:"server"`
+}
+
+type docServer struct {
+	Comment string      `kdl:",comment"`
+	Name    string      `kdl:",arg"`
+	Listen  []docListen `kdl:"listen"`
+	TLS     bool        `kdl:"tls"`
+}
+
+type docListen struct {
+	Comment string `kdl:",comment"`
+	Addr    string `kdl:",arg"`
+}
+
+func TestStructComment(t *testing.T) {
+	var cfg docConfig
+	if err := kuddle.Unmarshal([]byte(commented), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := docConfig{Server: docServer{
+		Comment: "Detached.\n\nThe server.",
+		Name:    "main",
+		Listen:  []docListen{{Comment: "Where to listen,\nin order.", Addr: ":80"}},
+		TLS:     true,
+	}}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("got  %+v\nwant %+v", cfg, want)
+	}
+
+	cfg.Server.Comment = "The web server."
+	cfg.Server.Listen = append(cfg.Server.Listen, docListen{Addr: ":443"})
+	out, err := kuddle.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOut := `// The web server.
+server main {
+    // Where to listen,
+    // in order.
+    listen :80
+    listen :443
+    tls #true
+}
+`
+	if string(out) != wantOut {
+		t.Errorf("got\n%s\nwant\n%s", out, wantOut)
+	}
+}
+
+func TestStructCommentValue(t *testing.T) {
+	// A []kdltext.Comment field keeps the kind of each comment, and its text
+	// as is.
+	type node struct {
+		Comments []kdltext.Comment `kdl:",comment"`
+	}
+	line := func(text string) kdltext.Comment { return kdltext.Comment{Kind: kdltext.CommentLine, Text: text} }
+	block := func(text string) kdltext.Comment { return kdltext.Comment{Kind: kdltext.CommentBlock, Text: text} }
+	tests := []struct {
+		in   string
+		want []kdltext.Comment
+	}{
+		{"n\n", nil},
+		{"// one\n// two\nn\n", []kdltext.Comment{line(" one\n two")}},
+		{"/* The server. */\nn\n", []kdltext.Comment{block(" The server. ")}},
+		{"/*\n  multi\n  line\n*/\nn\n", []kdltext.Comment{block("\n  multi\n  line\n")}},
+		{"// one\n\n// two\nn\n", []kdltext.Comment{line(" one"), line(" two")}},
+		{"/* one */\n// two\nn\n", []kdltext.Comment{block(" one "), line(" two")}},
+	}
+	for _, tt := range tests {
+		var v struct {
+			N node `kdl:"n"`
+		}
+		if err := kuddle.Unmarshal([]byte(tt.in), &v); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(v.N.Comments, tt.want) {
+			t.Errorf("%q: got %+v, want %+v", tt.in, v.N.Comments, tt.want)
+		}
+		out, err := kuddle.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != tt.in {
+			t.Errorf("got\n%s\nwant\n%s", out, tt.in)
+		}
 	}
 }
