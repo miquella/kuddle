@@ -13,11 +13,14 @@ import (
 // Comments and formatting are not kept.
 //
 // Don't embed a Document in a struct, with or without a tag. Embedding
-// promotes its UnmarshalKDL method to the struct, which then unmarshals as a
-// Document, and its other fields are ignored. Hold a Document in a named
-// field instead.
+// promotes its MarshalKDL and UnmarshalKDL methods to the struct, which then
+// marshals and unmarshals as a Document, and its other fields are ignored.
+// Hold a Document in a named field instead.
 type Document struct {
-	Nodes []Node
+	// Nodes is the document's nodes. Where Marshal can't call the methods of
+	// a Document, as for one held in an interface, its tag has Marshal write
+	// them all the same.
+	Nodes []Node `kdl:",children"`
 }
 
 // Node is a KDL node.
@@ -175,6 +178,45 @@ func (d *Document) UnmarshalKDL(dec *kdltext.Decoder) error {
 	}
 	d.Nodes = clone(b.nodes)
 	return nil
+}
+
+// MarshalKDL writes the nodes of d to enc: the nodes of the document, or, if
+// enc is within a node, the node's children.
+func (d *Document) MarshalKDL(enc *kdltext.Encoder) error { return writeNodes(enc, d.Nodes) }
+
+func writeNodes(enc *kdltext.Encoder, nodes []Node) error {
+	for i := range nodes {
+		if err := writeNode(enc, &nodes[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeNode(enc *kdltext.Encoder, n *Node) error {
+	if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(n.Name).WithType(n.Type)}); err != nil {
+		return err
+	}
+	for _, e := range n.Entries {
+		if err := writeEntry(enc, e); err != nil {
+			return err
+		}
+	}
+	if err := writeNodes(enc, n.Children); err != nil {
+		return err
+	}
+	return enc.WriteToken(kdltext.Token{Kind: kdltext.KindEnd, Children: n.Children != nil})
+}
+
+// writeEntry writes the tokens of e: a property's name and value, or an
+// argument's value.
+func writeEntry(enc *kdltext.Encoder, e Entry) error {
+	if e.IsProp() {
+		if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindProp, Value: kdltext.String(e.Name)}); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(kdltext.Token{Kind: kdltext.KindValue, Value: e.Value})
 }
 
 // builder builds nodes from the tokens of a Decoder. The entries and

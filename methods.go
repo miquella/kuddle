@@ -9,20 +9,34 @@ import (
 	"github.com/miquella/kuddle/kdltext"
 )
 
+// Marshaler is implemented by types that marshal themselves into KDL.
+// MarshalKDL writes the contents of the value's node to the Encoder, or, for
+// an arg, args, prop or props field, its single value. To fall back to the
+// default rules, it returns errors.ErrUnsupported without writing anything.
+// For a node, it can also hand the node's contents to the default rules by
+// calling MarshalEncode, which writes a node's contents but not a single
+// value. The package documentation covers the full rules, under Custom
+// marshaling.
+type Marshaler interface {
+	MarshalKDL(*kdltext.Encoder) error
+}
+
 // Unmarshaler is implemented by types that unmarshal themselves from KDL.
-// UnmarshalKDL reads from the Decoder the contents of the value's node, or,
-// for an arg, args, prop or props field, its single value. It may return
-// errors.ErrUnsupported without reading anything, for the value to be
-// unmarshaled by the default rules, or, for a node, delegate the node's
-// contents to the default rules by calling UnmarshalDecode, which is for a
-// node's contents only, not a single value. The package documentation
-// describes the rules in full, under Custom marshaling.
+// UnmarshalKDL reads the contents of the value's node from the Decoder, or,
+// for an arg, args, prop or props field, its single value. To fall back to
+// the default rules, it returns errors.ErrUnsupported without reading
+// anything. For a node, it can also hand the node's contents to the default
+// rules by calling UnmarshalDecode, which reads a node's contents but not a
+// single value. The package documentation covers the full rules, under
+// Custom marshaling.
 type Unmarshaler interface {
 	UnmarshalKDL(*kdltext.Decoder) error
 }
 
 var (
+	marshalerType       = reflect.TypeFor[Marshaler]()
 	unmarshalerType     = reflect.TypeFor[Unmarshaler]()
+	textMarshalerType   = reflect.TypeFor[encoding.TextMarshaler]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 	valueType    = reflect.TypeFor[kdltext.Value]()
@@ -40,8 +54,8 @@ const maxIndirections = 1000
 // errCycle is the error for a value or type that leads back to itself.
 var errCycle = errors.New("encountered a cycle")
 
-// typeInfo is what unmarshaling needs to know about a type, which typeInfoOf
-// computes once per type.
+// typeInfo is what marshaling and unmarshaling need to know about a type,
+// which typeInfoOf computes once per type.
 type typeInfo struct {
 	methods      bool // see hasMethods
 	value        bool // see isValueType
@@ -62,22 +76,22 @@ func typeInfoOf(t reflect.Type) *typeInfo {
 	for n := 0; elem.Kind() == reflect.Pointer && n < maxIndirections; n++ {
 		elem = elem.Elem()
 	}
-	elemMethods := implements(elem, unmarshalerType)
+	elemMethods := implements(elem, marshalerType, unmarshalerType)
 	ti := &typeInfo{
-		methods:      implements(t, unmarshalerType),
+		methods:      implements(t, marshalerType, unmarshalerType),
 		value:        !elemMethods && defaultValueType(elem),
 		entry:        elemMethods || defaultValueType(elem),
 		defaultValue: defaultValueType(t),
-		key:          t.Kind() == reflect.String || implements(t, textUnmarshalerType),
+		key:          t.Kind() == reflect.String || implements(t, textMarshalerType, textUnmarshalerType),
 		unmarshaler:  reflect.PointerTo(t).Implements(unmarshalerType),
 	}
 	typeInfos.Store(t, ti)
 	return ti
 }
 
-// hasMethods reports whether t or *t implements Unmarshaler, which makes it
-// marshaled as a node, except in the fields that hold arguments and
-// properties.
+// hasMethods reports whether t or *t implements Marshaler or Unmarshaler,
+// which makes it marshaled as a node, except in the fields that hold
+// arguments and properties.
 func hasMethods(t reflect.Type) bool { return typeInfoOf(t).methods }
 
 // isValueType reports whether t is represented by a single KDL value, rather
@@ -95,12 +109,12 @@ func isDefaultValueType(t reflect.Type) bool { return typeInfoOf(t).defaultValue
 
 // isKeyType reports whether t can be the key type of a map holding
 // properties or children: whether it is a string type, or implements
-// encoding.TextUnmarshaler.
+// encoding.TextMarshaler or encoding.TextUnmarshaler.
 func isKeyType(t reflect.Type) bool { return typeInfoOf(t).key }
 
 // defaultValueType computes isDefaultValueType.
 func defaultValueType(t reflect.Type) bool {
-	if t == valueType || implements(t, textUnmarshalerType) {
+	if t == valueType || implements(t, textMarshalerType, textUnmarshalerType) {
 		return true
 	}
 	switch t.Kind() {

@@ -710,8 +710,9 @@ func (d *decoder) appendNode(c *nodeStart, v reflect.Value) error {
 type valueMode int
 
 const (
-	elemValue  valueMode = iota // it can't be: the type is decoded from a node
-	fieldValue                  // with its method, as for an arg or prop field
+	elemValue    valueMode = iota // it can't be: the type is decoded from a node
+	fieldValue                    // with its method, as for an arg or prop field
+	defaultValue                  // without its method, which returned errors.ErrUnsupported
 )
 
 // value decodes the next token, a KDL value token, into v. The error, if any,

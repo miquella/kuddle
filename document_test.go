@@ -125,6 +125,45 @@ func TestUnmarshalDecodeChildren(t *testing.T) {
 	}
 }
 
+func TestEmptyChildren(t *testing.T) {
+	const input = "a {}\nb\nc {\n    d {}\n}\n"
+	var doc kuddle.Document
+	if err := kuddle.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Nodes[0].Children == nil || doc.Nodes[1].Children != nil {
+		t.Errorf("got %+v, want a and c with children blocks, and b without", doc)
+	}
+	out, err := kuddle.Marshal(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != input {
+		t.Errorf("got\n%s\nwant\n%s", out, input)
+	}
+}
+
+func TestDocumentMarshalKDL(t *testing.T) {
+	var b strings.Builder
+	enc := kdltext.NewEncoder(&b)
+	doc := &kuddle.Document{Nodes: []kuddle.Node{
+		{Name: "a", Entries: []kuddle.Entry{kuddle.Arg(kdltext.Int(1)), kuddle.Prop("k", kdltext.String("v"))}},
+		{Name: "b", Children: []kuddle.Node{{Name: "c"}}},
+	}}
+	if err := doc.MarshalKDL(enc); err != nil {
+		t.Fatal(err)
+	}
+	enc.WriteToken(kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String("parent")})
+	if err := doc.MarshalKDL(enc); err != nil {
+		t.Fatal(err)
+	}
+	enc.WriteToken(kdltext.Token{Kind: kdltext.KindEnd})
+	want := "a 1 k=v\nb {\n    c\n}\nparent {\n    a 1 k=v\n    b {\n        c\n    }\n}\n"
+	if b.String() != want {
+		t.Errorf("got\n%s\nwant\n%s", b.String(), want)
+	}
+}
+
 func TestNodeEqual(t *testing.T) {
 	node := func() kuddle.Node {
 		return kuddle.Node{Type: new("t"), Name: "n", Entries: []kuddle.Entry{

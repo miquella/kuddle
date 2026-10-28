@@ -1,8 +1,11 @@
-// Package kuddle converts between KDL documents and Go values, in the manner
-// of encoding/json/v2. The [kdltext] package handles the syntax of KDL,
-// reading and writing documents as streams of tokens.
+// Package kuddle encodes and decodes KDL documents to and from Go values. Its
+// API takes some inspiration from encoding/json/v2. The [kdltext] package
+// handles KDL syntax, reading and writing documents as streams of tokens.
 //
-// [Unmarshal] decodes a document into a Go value by the rules below.
+// [Unmarshal] decodes a document into a Go value, and [Marshal] encodes a Go
+// value as a document, following the rules below. The two are inverses: a Go
+// value marshals to a document that unmarshals back to an equal value, as far
+// as KDL can represent it.
 //
 // # Nodes
 //
@@ -13,9 +16,13 @@
 //     tags).
 //   - A map holds the node's properties and children, keyed by name. Its keys
 //     are of a string type, or of a type implementing
-//     [encoding.TextUnmarshaler], which converts names to keys.
+//     [encoding.TextUnmarshaler] and [encoding.TextMarshaler], which convert
+//     names to keys and keys to names. Marshal writes the values of value
+//     types as properties, and the others as child nodes, in the order of
+//     their keys' names.
 //   - A slice or array holds the node's arguments, followed by its children,
-//     whose names Unmarshal ignores.
+//     whose names Unmarshal ignores. Marshal writes the elements of value
+//     types as arguments, and the others as child nodes.
 //   - A value type (see Values) holds the node's single argument, which must
 //     be all there is in the node.
 //   - A [Node] holds the node as it is, and a [Document] the node's children.
@@ -31,33 +38,43 @@
 // and everything in a map or slice that holds one is a child node.
 // Unmarshaling a whole document into an empty interface gives a *Document.
 //
-// Unmarshal reports an error for what a node has that its Go value can't
-// hold, such as the arguments of a node held by a map, or the properties of
-// one held by a slice. For the arguments, properties and children that a
-// struct has no field for, the error wraps [ErrUnknown], and [DiscardUnknown]
-// has Unmarshal ignore them instead, so that a struct can hold only the parts
-// of a document that matter to it.
+// Unmarshal reports an error when a node has something its Go value can't
+// hold, such as arguments on a node held by a map, or properties on a node
+// held by a slice. When a struct has no field for an argument, property or
+// child node, the error wraps [ErrUnknown]. Setting [DiscardUnknown] skips
+// these instead, so that a struct can hold just the parts of a document it
+// cares about.
+//
+// Marshal names a child node after its struct field or map key. Elsewhere,
+// such as for a slice element, a node keeps its own name: a Node's name (even
+// if empty), a struct's name field (if not empty), or else "-". A nil pointer
+// to a value type, or a nil interface, becomes a node with a single #null
+// argument. A nil pointer to any other type has no node: Marshal omits it as
+// a struct field or map value, and reports an error for it as a slice or
+// array element, where omitting it would shift the elements after it.
 //
 // # Values
 //
 // A value type is one whose values are single KDL values: a bool, string,
-// integer, float, []byte, [kdltext.Value] or empty interface, a type
-// implementing [encoding.TextUnmarshaler], or a pointer to a value type, but
-// not a type implementing [Unmarshaler]. A KDL value corresponds to a Go value
-// according to the value's type:
+// integer or float type, []byte, [kdltext.Value], the empty interface, a type
+// implementing [encoding.TextMarshaler] or [encoding.TextUnmarshaler], or a
+// pointer to a value type. A type implementing [Marshaler] or [Unmarshaler]
+// is never a value type. KDL values map to Go values as follows:
 //
 //   - A bool is #true or #false, and a string is a string.
-//   - An integer or float is a number. Unmarshal reports an error for a number
-//     that doesn't fit the Go type.
+//   - An integer or float is a number. Unmarshal reports an error if the
+//     number doesn't fit the Go type.
 //   - A []byte is a base64-encoded string.
-//   - A kdltext.Value is the value as it is.
-//   - A type implementing encoding.TextUnmarshaler is a string, its text.
-//   - An empty interface is set by Unmarshal to a string, bool, nil, int64,
-//     for an integer that fits one, or float64.
-//   - A pointer is what it points to.
+//   - A kdltext.Value is the value as written.
+//   - A type implementing encoding.TextMarshaler or encoding.TextUnmarshaler
+//     is a string holding its text.
+//   - Unmarshal sets an empty interface to a string, bool, nil, int64 (for an
+//     integer that fits) or float64. Marshal writes whatever value it holds.
+//   - A pointer is whatever it points to.
 //
 // #null sets a pointer to nil, a kdltext.Value to #null, and any other Go
-// value to its zero value, without calling UnmarshalText.
+// value to its zero value, without calling UnmarshalText. Marshal writes a nil
+// pointer or interface as #null.
 //
 // # Struct tags
 //
@@ -93,7 +110,8 @@
 //     methods, other than a []byte, holds every child node with the name, one
 //     per element, but if its elements are of a value type, they hold the
 //     arguments of each node, and if they are empty interfaces, each node's
-//     children too.
+//     children too. Marshal writes these as the arguments and children of a
+//     single node, and writes no node for an empty slice.
 //   - arg: the next argument, in the order of the arg fields.
 //   - args: the remaining arguments, after those of the arg fields, as a
 //     slice.
@@ -102,8 +120,10 @@
 //   - props: the remaining properties, those without a prop field, as a map
 //     keyed by name.
 //   - entries: the remaining arguments and properties, those without an arg
-//     or prop field, in order, as a []Entry. A struct with an entries field
-//     can't have an args or props field.
+//     or prop field, in order, as a []Entry. Marshal writes them after the
+//     arguments of the arg fields and before the properties of the prop
+//     fields. A struct with an entries field can't have an args or props
+//     field.
 //   - children: the remaining child nodes, those without a child field, as a
 //     slice, or as a map keyed by name.
 //   - name: the node's name, as a string.
@@ -116,7 +136,8 @@
 // nodes. A child or children field can't hold an Entry, even as the elements
 // of a slice or map: it is an argument or property rather than a node, and is
 // held by an entries field. The keys of the maps of props and children fields
-// are as for a map.
+// are as for a map. The omitzero option has Marshal leave the field out if it
+// is zero, as reported by its IsZero method if it has one.
 //
 // A field with the tag "-" is ignored, and so are unexported fields. The
 // fields of an embedded struct, or pointer to a struct, without a tag are
@@ -128,51 +149,63 @@
 //
 // # Custom marshaling
 //
-// A type can unmarshal itself by implementing [Unmarshaler], whose method
-// reads its tokens from the live [kdltext.Decoder]. It takes precedence over
-// encoding.TextUnmarshaler. A type implementing it is a node everywhere but in
-// the arg, args, prop and props fields of a struct, where it is a single
-// value: in a map, slice or children field, its values are child nodes, never
-// properties or arguments, and a slice or map type with the method is one
-// node.
+// A type can marshal itself by implementing [Marshaler] and [Unmarshaler].
+// Their methods write and read the type's tokens through the live
+// [kdltext.Encoder] and [kdltext.Decoder], and take precedence over
+// encoding.TextMarshaler and encoding.TextUnmarshaler. A type implementing
+// either interface is a node, except in a struct's arg, args, prop and props
+// fields, where it is a single value. In a map, slice or children field, its
+// values are always child nodes, never properties or arguments, and a slice
+// or map type with the methods is a single node. That way its values always
+// round-trip through the same methods.
 //
-// For a node, Unmarshal reads its KindNode token, setting a struct's name and
-// type fields as for any value of the type, and its KindEnd token, and
-// UnmarshalKDL the node's contents between them: its arguments, properties and
-// children. UnmarshalKDL must read all of the contents, and stop before the
-// KindEnd token. At the top level, the contents are the document's nodes. For
-// an argument or property, UnmarshalKDL reads the single KindValue token of
-// the value, after the KindProp token of a property. Unmarshal reports an
-// error if the method reads more or less than that.
+// For a node, Marshal and Unmarshal write and read its KindNode token, with a
+// struct's name and type fields as for any value of the type, and its KindEnd
+// token, and the methods the node's contents between them: its arguments,
+// properties and children. UnmarshalKDL must read all of the contents, and
+// stop before the KindEnd token. At the top level, the contents are the
+// document's nodes. For an argument or property, the methods write and read
+// the single KindValue token of the value, after the KindProp token of a
+// property. Marshal and Unmarshal report an error if a method writes or reads
+// more or less than that.
 //
-// UnmarshalKDL may return [errors.ErrUnsupported] without reading anything,
-// though it may peek at the next token, for the value to be unmarshaled by the
-// default rules, as if its type had no method. Returning it after reading
-// anything is an error. For a node, the method can also delegate the node's
-// contents to the default rules, by calling [UnmarshalDecode] with its value
-// converted to a type without the method, such as (*plain)(v), where plain is
-// defined by type plain T. For a single value, it must not, since
-// UnmarshalDecode reads the rest of a node, not one value: it returns
-// errors.ErrUnsupported instead, or reads the KindValue token itself.
+// A method may return [errors.ErrUnsupported] without writing or reading
+// anything, though it may peek at the next token, for the value to be
+// marshaled by the default rules, as if its type had no methods. Returning it
+// after writing or reading anything is an error. For a node, a method can also
+// delegate the node's contents to the default rules, by calling
+// [MarshalEncode] or [UnmarshalDecode] with its value converted to a type
+// without the methods, such as plain(v) or (*plain)(v), where plain is defined
+// by type plain T. For a single value, it must not, since those functions
+// write and read a node's contents, not one value: it returns
+// errors.ErrUnsupported instead, or writes or reads the KindValue token
+// itself.
 //
-// UnmarshalKDL may have a value or pointer receiver: Unmarshal calls it
-// through a pointer to the value it decodes into.
+// The methods may have value or pointer receivers. Unmarshal calls them
+// through a pointer to the value it decodes into. Marshal calls methods with
+// pointer receivers on the values it can address. It copies the value it is
+// given, and the values of maps, to make them addressable, but a value held in
+// an interface (such as an element of a []any) is not addressable, and
+// neither are its fields and elements.
 //
-// For an argument or property, Unmarshal sets a pointer to nil for #null,
-// without calling UnmarshalKDL. A value that is not a pointer has its
-// UnmarshalKDL method read #null, as any other value.
+// For an argument or property, Marshal writes a nil pointer as #null, and
+// Unmarshal sets a pointer to nil for #null, without calling a method. A value
+// that is not a pointer has its UnmarshalKDL method read #null, as any other
+// value.
 //
 // # Documents
 //
 // A [Document] holds a document as it is: its nodes, and the arguments and
 // properties of each node, including repeated properties, in order, but not
-// its comments or formatting. Its UnmarshalKDL method, which implements
-// Unmarshaler, reads the document's nodes, or the children of a node without
-// arguments or properties.
+// its comments or formatting. Its MarshalKDL and UnmarshalKDL methods, which
+// implement Marshaler and Unmarshaler, write and read the document's nodes, or
+// the children of a node without arguments or properties. Where they can't be
+// called, as for a Document held in an interface, the tag of its Nodes field
+// has Marshal write the nodes all the same.
 //
 // A [Node] holds a node as it is: its name, type annotation, entries and
-// children, where an [Entry] is an argument or property. Unmarshal reads it
-// itself.
+// children, where an [Entry] is an argument or property. Marshal and Unmarshal
+// write and read it themselves.
 package kuddle
 
 import (

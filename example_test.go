@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -41,9 +42,47 @@ server api port=8443 tls=#true
 	// {LogLevel:debug Servers:[{Name:web Port:8080 TLS:false Routes:[/ /static]} {Name:api Port:8443 TLS:true Routes:[]}]}
 }
 
+func ExampleMarshal() {
+	type Package struct {
+		Name    string   `kdl:",arg"`
+		Version string   `kdl:"version,prop"`
+		Authors []string `kdl:"authors,omitzero"`
+		License string   `kdl:"license,omitzero"`
+	}
+
+	type Manifest struct {
+		Name string    `kdl:"name"`
+		Deps []Package `kdl:"dependency"`
+	}
+
+	b, err := kuddle.Marshal(Manifest{
+		Name: "app",
+		Deps: []Package{
+			{Name: "kuddle", Version: "1.2.0", Authors: []string{"Ann", "Bo"}},
+			{Name: "lexer", Version: "0.3.1", License: "MIT"},
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	os.Stdout.Write(b)
+	// Output:
+	// name app
+	// dependency kuddle version="1.2.0" {
+	//     authors Ann Bo
+	// }
+	// dependency lexer version="0.3.1" {
+	//     license MIT
+	// }
+}
+
 // Duration is a time.Duration that is written in KDL as a string, such as
 // "1m30s": as a property, or as the single argument of a node.
 type Duration time.Duration
+
+func (d Duration) MarshalKDL(enc *kdltext.Encoder) error {
+	return enc.WriteToken(kdltext.Token{Kind: kdltext.KindValue, Value: kdltext.String(time.Duration(d).String())})
+}
 
 func (d *Duration) UnmarshalKDL(dec *kdltext.Decoder) error {
 	t, err := dec.ReadToken()
@@ -77,6 +116,30 @@ func ExampleUnmarshaler() {
 	fmt.Println(time.Duration(c.Interval), time.Duration(c.Timeout))
 	// Output:
 	// 1m30s 5s
+}
+
+// The same method marshals a Duration as a property and as a node.
+func ExampleMarshaler() {
+	type Check struct {
+		URL      string   `kdl:",arg"`
+		Interval Duration `kdl:"interval,prop"`
+		Timeout  Duration `kdl:"timeout"`
+	}
+
+	checks := struct {
+		Checks []Check `kdl:"check"`
+	}{
+		[]Check{{"https://example.com/health", Duration(90 * time.Second), Duration(10 * time.Second)}},
+	}
+	b, err := kuddle.Marshal(checks)
+	if err != nil {
+		log.Fatal(err)
+	}
+	os.Stdout.Write(b)
+	// Output:
+	// check "https://example.com/health" interval="1m30s" {
+	//     timeout "10s"
+	// }
 }
 
 // Port is a TCP port, written in KDL as a number or as the name of a
@@ -142,6 +205,76 @@ listen "::" port=https
 	// Output:
 	// [{localhost 8080} {:: 443}]
 	// kuddle: cannot unmarshal node listen[0] (line 1, column 1) into Go kuddle_test.Listen: no port
+}
+
+// Env is a list of environment variables, written in KDL as the properties of
+// a node, in order.
+type Env struct {
+	Vars []EnvVar
+}
+
+type EnvVar struct {
+	Name, Value string
+}
+
+func (e Env) MarshalKDL(enc *kdltext.Encoder) error {
+	for _, v := range e.Vars {
+		if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindProp, Value: kdltext.String(v.Name)}); err != nil {
+			return err
+		}
+		if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindValue, Value: kdltext.String(v.Value)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Env) UnmarshalKDL(dec *kdltext.Decoder) error {
+	e.Vars = nil
+	for dec.PeekKind() == kdltext.KindProp {
+		name, _ := dec.ReadToken()
+		val, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if val.Value.Kind() != kdltext.ValueString {
+			return fmt.Errorf("want a string for %s, not %v", name.Name(), val.Value)
+		}
+		e.Vars = append(e.Vars, EnvVar{name.Name(), val.Value.String()})
+	}
+	if k := dec.PeekKind(); k != kdltext.KindEnd {
+		return fmt.Errorf("want only properties, not a %v", k)
+	}
+	return nil
+}
+
+// Env writes and reads the contents of its node: its properties.
+func ExampleMarshaler_contents() {
+	type Job struct {
+		Command string `kdl:"command"`
+		Env     Env    `kdl:"env"`
+	}
+
+	var job Job
+	input := `
+command "make test"
+env PATH="/usr/bin" GOFLAGS="-race" CGO_ENABLED="1"
+`
+	if err := kuddle.Unmarshal([]byte(input), &job); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(job.Env.Vars)
+
+	job.Env.Vars = job.Env.Vars[:2]
+	b, err := kuddle.Marshal(job)
+	if err != nil {
+		log.Fatal(err)
+	}
+	os.Stdout.Write(b)
+	// Output:
+	// [{PATH /usr/bin} {GOFLAGS -race} {CGO_ENABLED 1}]
+	// command "make test"
+	// env PATH="/usr/bin" GOFLAGS=-race
 }
 
 // This example reads a document an order at a time, decoding the children of

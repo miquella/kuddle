@@ -191,7 +191,7 @@ func (fs *structFields) index(f *field) error {
 		return named(fs.children, "child node")
 	case fieldArg:
 		if !isEntryType(t) {
-			return fmt.Errorf("an arg field must be a value type, or have an UnmarshalKDL method, not %s", t)
+			return fmt.Errorf("an arg field must be a value type, or have a MarshalKDL or UnmarshalKDL method, not %s", t)
 		}
 		if err := checkValue(t); err != nil {
 			return fmt.Errorf("an arg field can't be a %s: %w", t, err)
@@ -199,7 +199,7 @@ func (fs *structFields) index(f *field) error {
 		fs.args = append(fs.args, f)
 	case fieldArgs:
 		if t.Kind() != reflect.Slice || isValueType(t) || hasMethods(t) || !isEntryType(t.Elem()) {
-			return fmt.Errorf("an args field must be a slice of a value type, or of a type with an UnmarshalKDL method, not %s", t)
+			return fmt.Errorf("an args field must be a slice of a value type, or of a type with a MarshalKDL or UnmarshalKDL method, not %s", t)
 		}
 		if err := checkValue(t.Elem()); err != nil {
 			return fmt.Errorf("an args field can't be a %s: %w", t, err)
@@ -207,7 +207,7 @@ func (fs *structFields) index(f *field) error {
 		return single(&fs.restArgs)
 	case fieldProp:
 		if !isEntryType(t) {
-			return fmt.Errorf("a prop field must be a value type, or have an UnmarshalKDL method, not %s", t)
+			return fmt.Errorf("a prop field must be a value type, or have a MarshalKDL or UnmarshalKDL method, not %s", t)
 		}
 		if err := checkValue(t); err != nil {
 			return fmt.Errorf("a prop field can't be a %s: %w", t, err)
@@ -215,7 +215,7 @@ func (fs *structFields) index(f *field) error {
 		return named(fs.props, "property")
 	case fieldProps:
 		if t.Kind() != reflect.Map || hasMethods(t) || !isKeyType(t.Key()) || !isEntryType(t.Elem()) {
-			return fmt.Errorf("a props field must be a map from string or text keys to a value type, or to a type with an UnmarshalKDL method, not %s", t)
+			return fmt.Errorf("a props field must be a map from string or text keys to a value type, or to a type with a MarshalKDL or UnmarshalKDL method, not %s", t)
 		}
 		if err := checkValue(t.Elem()); err != nil {
 			return fmt.Errorf("a props field can't be a %s: %w", t, err)
