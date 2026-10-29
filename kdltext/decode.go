@@ -18,6 +18,10 @@ type Decoder struct {
 	lex  *lexer.Lexer
 	opts *kdlopts.Struct // the options of NewDecoder (see Options)
 
+	// strictChildren is whether a node may have only one children block in
+	// v1, slash-dashed or not (see RejectMultipleChildrenBlocks).
+	strictChildren bool
+
 	look    lexToken // the next lexer token, if hasLook
 	hasLook bool
 	queue   []queued // parsed tokens; those before head have been returned
@@ -68,7 +72,7 @@ type level struct {
 }
 
 // NewDecoder returns a Decoder reading from r. The options that apply are
-// WithVersion and WithMaxTokenSize.
+// WithVersion, WithMaxTokenSize and RejectMultipleChildrenBlocks.
 //
 // If r is a *bytes.Buffer, the Decoder reads directly from its contents,
 // without copying them, and the buffer must not be written to while the
@@ -77,7 +81,11 @@ func NewDecoder(r io.Reader, opts ...Options) *Decoder {
 	o := kdlopts.Join(opts...)
 	l := lexer.New(r, lexer.Version(o.Version))
 	l.SetMaxTokenSize(o.MaxTokenSize)
-	return &Decoder{lex: l, opts: o}
+	return &Decoder{
+		lex:            l,
+		opts:           o,
+		strictChildren: o.Flags&kdlopts.RejectMultipleChildrenBlocks != 0,
+	}
 }
 
 // ReadToken returns the next token, or io.EOF at the end of the document.
@@ -335,7 +343,7 @@ func (d *Decoder) parseRest(f *frame) error {
 		return d.endNode()
 
 	case lexer.LBrace:
-		if f.st.opened {
+		if f.st.opened || f.st.children && d.oneBlock() {
 			return d.errorf(t, "node %s has more than one children block", lexer.Quote(f.name.String()))
 		}
 		f.st.children, f.st.opened = true, true
@@ -360,6 +368,9 @@ func (d *Decoder) parseRest(f *frame) error {
 		}
 		switch {
 		case next.Kind == lexer.LBrace:
+			if f.st.children && d.oneBlock() {
+				return d.errorf(next, "node %s has more than one children block", lexer.Quote(f.name.String()))
+			}
 			f.st.children = true
 			return d.openBlock(f, discardBlock)
 		case f.st.children:
@@ -406,6 +417,13 @@ func (d *Decoder) endNode() error {
 		d.push(Token{Kind: KindEnd}, d.endPos(), d.read)
 	}
 	return nil
+}
+
+// oneBlock reports whether a node may have only one children block,
+// slash-dashed or not: in v1, with RejectMultipleChildrenBlocks. More than
+// one is v2 syntax, so an undecided version is decided as v2.
+func (d *Decoder) oneBlock() bool {
+	return d.strictChildren && !d.lex.Use(lexer.V2)
 }
 
 // parseEntry parses an argument or property. It reports whether it consumed

@@ -250,6 +250,40 @@ func TestMaxTokenSize(t *testing.T) {
 	kdltext.WithMaxTokenSize(-1)
 }
 
+func TestRejectMultipleChildrenBlocks(t *testing.T) {
+	v1, strict := kdltext.WithVersion(kdltext.V1), kdltext.RejectMultipleChildrenBlocks(true)
+	tests := []struct {
+		input string
+		opts  []kdltext.Options
+		want  []string // nil if the input must fail
+	}{
+		{`node /-{ a } { b }`, []kdltext.Options{v1}, []string{"node node {", "node b", "end", "end"}},
+		{`node { b } /-{ a }`, []kdltext.Options{v1}, []string{"node node {", "node b", "end", "end"}},
+		{`node /-{} /-{}`, []kdltext.Options{v1}, []string{"node node", "end"}},
+		{`node /-{ a } { b }`, []kdltext.Options{v1, strict}, nil},
+		{`node { b } /-{ a }`, []kdltext.Options{v1, strict}, nil},
+		{`node /-{} /-{}`, []kdltext.Options{v1, strict}, nil},
+		{`node /-{ a }`, []kdltext.Options{v1, strict}, []string{"node node", "end"}},
+		{`node { b }`, []kdltext.Options{v1, strict}, []string{"node node {", "node b", "end", "end"}},
+		// It does not apply to v2, and takes an undecided version as v2.
+		{`node /-{ a } { b }`, []kdltext.Options{kdltext.WithVersion(kdltext.V2), strict}, []string{"node node {", "node b", "end", "end"}},
+		{`node /-{ a } { b }`, []kdltext.Options{strict}, []string{"node node {", "node b", "end", "end"}},
+		// Two blocks that are not slash-dashed are never allowed.
+		{`node { a } { b }`, []kdltext.Options{v1}, nil},
+	}
+	for _, tt := range tests {
+		got, err := readAll(tt.input, tt.opts...)
+		switch {
+		case tt.want == nil && err == nil:
+			t.Errorf("%q: read %q, want error", tt.input, got)
+		case tt.want != nil && err != nil:
+			t.Errorf("%q: %v", tt.input, err)
+		case tt.want != nil && fmt.Sprint(got) != fmt.Sprint(tt.want):
+			t.Errorf("%q:\ngot  %q\nwant %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestDecoderState(t *testing.T) {
 	d := kdltext.NewDecoder(strings.NewReader("a {\n  b 1\n}"))
 	var got []string

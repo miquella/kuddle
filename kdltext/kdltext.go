@@ -92,6 +92,15 @@ func QuoteIdentifiers(v bool) Options {
 	return kdlopts.Bool(kdlopts.QuoteIdentifiers, v)
 }
 
+// RejectMultipleChildrenBlocks sets whether a Decoder limits a node to one
+// children block, slash-dashed or not, as the v1 grammar does. By default, it
+// allows slash-dashed children blocks around the node's one real block, like
+// v2 and other v1 implementations: node /-{ a } { b } is node { b }. It
+// applies only to KDL v1.
+func RejectMultipleChildrenBlocks(v bool) Options {
+	return kdlopts.Bool(kdlopts.RejectMultipleChildrenBlocks, v)
+}
+
 // WithMaxTokenSize sets the maximum number of bytes of input that a Decoder
 // holds to read a single token, such as a string or comment, which is
 // unlimited by default or if n is zero. Reading a larger token is an error
