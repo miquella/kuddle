@@ -66,6 +66,39 @@ func TestNumbers(t *testing.T) {
 	}
 }
 
+func TestCanonical(t *testing.T) {
+	tests := []struct {
+		raw, canonical, decimal string
+	}{
+		{"0", "0", "0"},
+		{"+1_000", "1000", "1000"},
+		{"-010", "-10", "-10"},
+		{"-0", "0", "0"},
+		{"0xABC_def_0123", "0xabcdef0123", "737894400291"},
+		{"-0x01", "-0x1", "-1"},
+		{"0o0", "0o0", "0"},
+		{"0b1_0", "0b10", "2"},
+		{"0xabcdef0123456789abcdef", "0xabcdef0123456789abcdef", "207698809136909011942886895"},
+		{"1_1.0", "11.0", "11.0"},
+		{"+00.5", "0.5", "0.5"},
+		{"-0.0", "-0.0", "-0.0"},
+		{"1e10", "1E+10", "1E+10"},
+		{"1.0e-10_0", "1.0E-100", "1.0E-100"},
+		{"1.23E+1000", "1.23E+1000", "1.23E+1000"},
+		{"2e007", "2E+7", "2E+7"},
+		{"#-inf", "#-inf", "#-inf"},
+	}
+	for _, tt := range tests {
+		tok := FromRaw(Number, []byte(tt.raw))
+		if got := tok.Canonical(false); got != tt.canonical {
+			t.Errorf("%s: Canonical(false) = %s, want %s", tt.raw, got, tt.canonical)
+		}
+		if got := tok.Canonical(true); got != tt.decimal {
+			t.Errorf("%s: Canonical(true) = %s, want %s", tt.raw, got, tt.decimal)
+		}
+	}
+}
+
 func TestConstructed(t *testing.T) {
 	tests := []struct {
 		tok  Token

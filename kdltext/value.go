@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/miquella/kuddle/internal/lexer"
 )
@@ -58,6 +59,17 @@ type Value struct {
 
 // String returns a string value.
 func String(s string) Value { return Value{text: s, kind: lexer.String} }
+
+// Quoted returns a string value that is written as a quoted string, even
+// where a bare identifier would do. If s is not valid UTF-8, it is the same
+// as String, and is an error to write.
+func Quoted(s string) Value {
+	b, err := lexer.AppendQuote(nil, s)
+	if err != nil {
+		return String(s)
+	}
+	return Value{text: string(b), kind: lexer.String, source: true}
+}
 
 // number returns a number value with the given literal.
 func number(s string) Value { return Value{text: s, kind: lexer.Number} }
@@ -178,6 +190,31 @@ func (v Value) String() string {
 		return "<invalid>"
 	}
 	return v.contents()
+}
+
+// Canonical returns v, a number, in canonical form, or v itself for other
+// kinds of value: without underscores, a '+' sign or leading zeros, with the
+// digits of an integer in lower case, and with the exponent of a float
+// written as 'E' and a sign, as in 1.5E+10. If decimal is set, an integer is
+// written in decimal; otherwise it keeps its base.
+func (v Value) Canonical(decimal bool) Value {
+	if v.kind == lexer.Number {
+		v.text = v.numberToken().Canonical(decimal)
+	}
+	return v
+}
+
+// WithNewlines returns v, if it is a string as it was read, with the newlines
+// written in it replaced by newline. It changes neither escapes such as \n nor
+// a string built with String. KDL normalizes the newlines of a multi-line
+// string when it is read, but not those in a KDL v1 string, whose value
+// changes. Other values are returned as they are.
+func (v Value) WithNewlines(newline string) Value {
+	if v.source && v.kind != lexer.Ident {
+		s := strings.ReplaceAll(strings.ReplaceAll(v.text, "\r\n", "\n"), "\r", "\n")
+		v.text = strings.ReplaceAll(s, "\n", newline)
+	}
+	return v
 }
 
 // numberToken returns the value as a lexer token, for its numeric methods.

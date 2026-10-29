@@ -273,6 +273,62 @@ func (t Token) Float() (float64, error) {
 	return f, nil
 }
 
+// Canonical returns the literal of a Number token in canonical form: without
+// underscores, a '+' sign or leading zeros, with the digits of integers in
+// lower case, and with the exponent of floats written as 'E' and a sign, as
+// in 1.5E+10. If decimal is set, integers are written in decimal. Other
+// tokens are returned as their String.
+func (t Token) Canonical(decimal bool) string {
+	s := t.String()
+	if t.Kind != Number || strings.HasPrefix(s, "#") {
+		return s
+	}
+	sign, digits, base := splitNumber(strings.ReplaceAll(s, "_", ""))
+	if sign == "+" {
+		sign = ""
+	}
+
+	if base == 10 && strings.ContainsAny(digits, ".eE") {
+		mantissa, exp, hasExp := strings.Cut(strings.ToLower(digits), "e")
+		whole, frac, hasFrac := strings.Cut(mantissa, ".")
+		mantissa = trimZeros(whole)
+		if hasFrac {
+			mantissa += "." + frac
+		}
+		if !hasExp {
+			return sign + mantissa
+		}
+		expSign := "+"
+		if exp[0] == '+' || exp[0] == '-' {
+			expSign, exp = exp[:1], exp[1:]
+		}
+		return sign + mantissa + "E" + expSign + trimZeros(exp)
+	}
+
+	digits = trimZeros(strings.ToLower(digits))
+	if digits == "0" {
+		sign = ""
+	}
+	switch {
+	case base == 10:
+		return sign + digits
+	case decimal:
+		i, _ := new(big.Int).SetString(sign+digits, base)
+		return i.String()
+	}
+	return sign + map[int]string{16: "0x", 8: "0o", 2: "0b"}[base] + digits
+}
+
+// trimZeros returns the digits s without leading zeros, leaving at least one
+// digit.
+func trimZeros(s string) string {
+	t := strings.TrimLeft(s, "0")
+	if t == "" && s != "" {
+		return "0"
+	}
+	return t
+}
+
 // splitNumber splits a number literal into its sign, digits and base.
 func splitNumber(s string) (sign, digits string, base int) {
 	if s != "" && (s[0] == '+' || s[0] == '-') {

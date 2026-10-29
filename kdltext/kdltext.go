@@ -60,7 +60,8 @@ func WithVersion(v Version) Options {
 
 // WithNewline sets the line ending of the lines an Encoder writes, which is
 // "\n" or "\r\n". The default is "\n". The text of comments and strings is
-// written as it is, whatever newlines it holds.
+// written as it is, whatever newlines it holds (see the options of
+// kuddle.Document.Format).
 //
 // WithNewline panics if newline is neither.
 func WithNewline(newline string) Options {

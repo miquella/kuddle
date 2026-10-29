@@ -17,7 +17,8 @@ import (
 // Strings, names and numbers read by a Decoder are written as they were
 // read, if the version being written allows that form. Others are written as
 // bare identifiers where the version allows, and as quoted strings
-// otherwise; one that is not valid UTF-8 is an error.
+// otherwise; one that is not valid UTF-8 is an error. To change the style of
+// a document, see the Format method of kuddle.Document.
 //
 // Output is buffered until each top-level node ends. Nodes may be nested in
 // up to 10000 children blocks; a node nested deeper is an error.

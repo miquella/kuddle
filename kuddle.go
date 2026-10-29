@@ -206,6 +206,14 @@
 // A [Node] holds a node as it is: its name, type annotation, entries and
 // children, where an [Entry] is an argument or property. Marshal and Unmarshal
 // write and read it themselves.
+//
+// # Formatting
+//
+// [Document.Format] and [Node.Format] change how a document is written, between
+// reading and writing it. By default they keep numbers and strings as they were
+// written. Their options are [FormatNumbers], [FormatEmptyBlocks],
+// [FormatSortProperties], [FormatQuoteValues], [FormatNormalizeStrings],
+// [FormatStringNewlines] and [FormatNewline].
 package kuddle
 
 import (
