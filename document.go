@@ -8,9 +8,10 @@ import (
 	"github.com/miquella/kuddle/kdltext"
 )
 
-// Document is a KDL document. It keeps the order of the nodes, and of the
-// arguments and properties of each node, including repeated properties.
-// Comments and formatting are not kept.
+// Document is a KDL document. It preserves the order of the nodes, and of
+// each node's arguments and properties, repeated properties included. It
+// also keeps the document's comments and slash-dashed parts, as comment nodes
+// and entries, but not its formatting.
 //
 // Don't embed a Document in a struct, with or without a tag. Embedding
 // promotes its MarshalKDL and UnmarshalKDL methods to the struct, which then
@@ -23,34 +24,64 @@ type Document struct {
 	Nodes []Node `kdl:",children"`
 }
 
-// Node is a KDL node.
+// Node is a KDL node, or a comment between nodes.
 type Node struct {
+	Kind NodeKind
+
 	// Type is the type annotation, or nil for none. Like kdltext.Value.Type,
 	// it is shared by copies of the Node (see Clone).
 	Type *string
 
 	Name    string
-	Entries []Entry // arguments and properties, in order
+	Entries []Entry // arguments, properties and comments, in order
 
 	// Children is the node's children. It is nil for a node without a
 	// children block, and empty for one with an empty block: e {}.
 	Children []Node
+
+	// Comment is the comment of a comment node. For other nodes, it is the
+	// comment directly above the node, with no blank line between them, if
+	// it is a line or block comment.
+	Comment kdltext.Comment
 }
 
-// Entry is an argument or property of a node.
+// NodeKind is the kind of a Node.
+type NodeKind byte
+
+const (
+	NodeElement NodeKind = iota // a node, with a name, entries and children
+	NodeComment                 // a comment between nodes, which holds only its Comment
+)
+
+func (k NodeKind) String() string {
+	switch k {
+	case NodeElement:
+		return "node"
+	case NodeComment:
+		return "comment"
+	}
+	return "invalid"
+}
+
+// IsComment reports whether n is a comment node.
+func (n Node) IsComment() bool { return n.Kind == NodeComment }
+
+// Entry is an argument, property or comment of a node.
 type Entry struct {
 	Kind EntryKind
 
-	Name  string // the name of a property
-	Value kdltext.Value
+	Name    string        // the name of a property
+	Value   kdltext.Value // the value of an argument or property
+	Comment kdltext.Comment
 }
 
 // EntryKind is the kind of an Entry.
 type EntryKind byte
 
 const (
-	EntryArg  EntryKind = iota // an argument
-	EntryProp                  // a property
+	EntryArg     EntryKind = iota // an argument
+	EntryProp                     // a property
+	EntryComment                  // a comment, which holds only its Comment
 )
 
 func (k EntryKind) String() string {
@@ -59,22 +90,27 @@ func (k EntryKind) String() string {
 		return "argument"
 	case EntryProp:
 		return "property"
+	case EntryComment:
+		return "comment"
 	}
 	return "invalid"
 }
 
-// Equal reports whether d and e have equal nodes.
+// Equal reports whether d and e have equal nodes: the same content and
+// comments. Whitespace is not part of a Document, so it is not compared, and
+// strings are compared by their contents, not by how they were written.
 func (d *Document) Equal(e *Document) bool { return equalNodes(d.Nodes, e.Nodes) }
 
 // Clone returns a deep copy of d, which shares no slices or type annotations
 // with it.
 func (d *Document) Clone() *Document { return &Document{Nodes: cloneNodes(d.Nodes)} }
 
-// Equal reports whether n and m are equal: whether they have the same type
-// annotation, name, entries and children, and both or neither have a
-// children block.
+// Equal reports whether n and m are equal: whether both or neither are
+// comment nodes, and they have the same type annotation, name, entries,
+// children and comment, and both or neither have a children block.
 func (n Node) Equal(m Node) bool {
-	return equalType(n.Type, m.Type) && n.Name == m.Name &&
+	return n.IsComment() == m.IsComment() && n.Comment == m.Comment &&
+		equalType(n.Type, m.Type) && n.Name == m.Name &&
 		slices.EqualFunc(n.Entries, m.Entries, Entry.Equal) &&
 		(n.Children == nil) == (m.Children == nil) && equalNodes(n.Children, m.Children)
 }
@@ -95,9 +131,9 @@ func (n Node) Clone() Node {
 }
 
 // Equal reports whether e and f are the same kind of entry, with the same
-// name and value.
+// name, value and comment.
 func (e Entry) Equal(f Entry) bool {
-	return e.Kind == f.Kind && e.Name == f.Name && e.Value.Equal(f.Value)
+	return e.Kind == f.Kind && e.Name == f.Name && e.Comment == f.Comment && (e.IsComment() || e.Value.Equal(f.Value))
 }
 
 // Clone returns a copy of e that does not share its type annotation.
@@ -145,6 +181,9 @@ func (e Entry) IsArg() bool { return e.Kind == EntryArg }
 // IsProp reports whether e is a property.
 func (e Entry) IsProp() bool { return e.Kind == EntryProp }
 
+// IsComment reports whether e is a comment.
+func (e Entry) IsComment() bool { return e.Kind == EntryComment }
+
 // Args returns the node's arguments.
 func (n Node) Args() []kdltext.Value {
 	var args []kdltext.Value
@@ -168,9 +207,10 @@ func (n Node) Prop(name string) (kdltext.Value, bool) {
 }
 
 // UnmarshalKDL reads the rest of the document from dec into d, replacing its
-// nodes. If dec is within a node, it reads the rest of the node's children
-// instead, leaving the node's KindEnd token to be read; the node's arguments
-// and properties are an error.
+// nodes, with its comment nodes. If dec is within a node, it reads the rest
+// of the node's children instead, leaving the node's KindEnd token to be
+// read; the node's arguments and properties are an error, and the comment
+// entries after its children are discarded.
 func (d *Document) UnmarshalKDL(dec *kdltext.Decoder) error {
 	var b builder
 	if err := b.read(dec); err != nil {
@@ -194,7 +234,10 @@ func writeNodes(enc *kdltext.Encoder, nodes []Node) error {
 }
 
 func writeNode(enc *kdltext.Encoder, n *Node) error {
-	if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(n.Name).WithType(n.Type)}); err != nil {
+	if n.IsComment() {
+		return enc.WriteToken(kdltext.Token{Kind: kdltext.KindComment, Comment: n.Comment})
+	}
+	if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(n.Name).WithType(n.Type), Comment: n.Comment}); err != nil {
 		return err
 	}
 	for _, e := range n.Entries {
@@ -208,13 +251,16 @@ func writeNode(enc *kdltext.Encoder, n *Node) error {
 	return enc.WriteToken(kdltext.Token{Kind: kdltext.KindEnd, Children: n.Children != nil})
 }
 
-// writeEntry writes the tokens of e: a property's name and value, or an
-// argument's value.
+// writeEntry writes the tokens of e: a property's name and value, an
+// argument's value, or a comment.
 func writeEntry(enc *kdltext.Encoder, e Entry) error {
-	if e.IsProp() {
+	switch {
+	case e.IsProp():
 		if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindProp, Value: kdltext.String(e.Name)}); err != nil {
 			return err
 		}
+	case e.IsComment():
+		return enc.WriteToken(kdltext.Token{Kind: kdltext.KindEntryComment, Comment: e.Comment})
 	}
 	return enc.WriteToken(kdltext.Token{Kind: kdltext.KindValue, Value: e.Value})
 }
@@ -240,7 +286,7 @@ type openBuild struct {
 // read reads tokens from dec into b up to the KindEnd token of the node that
 // dec is within when read is called, which is left to be read, or up to the
 // end of the document. Arguments and properties outside of the nodes being
-// built are an error.
+// built are an error, and comment entries there are discarded.
 func (b *builder) read(dec *kdltext.Decoder) error {
 	depth := len(b.open)
 	for {
@@ -252,6 +298,11 @@ func (b *builder) read(dec *kdltext.Decoder) error {
 		case kdltext.KindValue, kdltext.KindProp:
 			if len(b.open) == 0 {
 				return errors.New("a Document holds only nodes, not arguments or properties")
+			}
+		case kdltext.KindEntryComment:
+			if len(b.open) == 0 {
+				dec.ReadToken()
+				continue
 			}
 		case kdltext.KindInvalid:
 			// The end of the document, or an error.
@@ -269,8 +320,12 @@ func (b *builder) read(dec *kdltext.Decoder) error {
 func (b *builder) token(t kdltext.Token) {
 	switch t.Kind {
 	case kdltext.KindNode:
-		node := Node{Type: t.Value.Type, Name: t.Name()}
+		node := Node{Type: t.Value.Type, Name: t.Name(), Comment: t.Comment}
 		b.open = append(b.open, openBuild{node, len(b.entries), len(b.nodes)})
+	case kdltext.KindComment:
+		b.nodes = append(b.nodes, Node{Kind: NodeComment, Comment: t.Comment})
+	case kdltext.KindEntryComment:
+		b.entries = append(b.entries, Entry{Kind: EntryComment, Comment: t.Comment})
 	case kdltext.KindProp:
 		b.prop, b.inProp = t.Name(), true
 	case kdltext.KindValue:

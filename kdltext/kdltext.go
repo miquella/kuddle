@@ -1,15 +1,37 @@
 // Package kdltext reads and writes the syntax of KDL documents, in versions 1
 // and 2 of the language.
 //
-// A Decoder reads a document as a stream of tokens, and an Encoder writes one.
-// The stream for a document is a sequence of nodes, each of which is
+// A Decoder reads a document as a stream of tokens, and an Encoder writes
+// one. A document's stream is a sequence of nodes and KindComment tokens,
+// where a node is
 //
-//	KindNode (KindValue | KindProp KindValue)* node* KindEnd
+//	KindNode (KindValue | KindProp KindValue | KindEntryComment)* (node | KindComment)* KindEntryComment* KindEnd
 //
-// where a KindValue token on its own is an argument, one after a KindProp
-// token is the value of that property, and the nested nodes are the node's
-// children. Comments, whitespace and slash-dash comments do not appear in the
-// stream.
+// A KindValue token on its own is an argument, and one after a KindProp
+// token is that property's value. The nested nodes and comments are the
+// node's children. KindEntryComment tokens after the children are written
+// after the node's closing '}'. Whitespace has no tokens.
+//
+// # Comments
+//
+// A Comment is a run of line comments on consecutive lines, a block comment,
+// or a slash-dashed part of the document. Each appears in the stream once:
+//
+//   - A comment directly above a node, with no blank line in between,
+//     belongs to the node: it is the Comment of the node's KindNode token. A
+//     slash-dashed node is never another node's comment.
+//   - A comment on a node's line, whether among its entries, after them, or
+//     after the '{' of its children, is a KindEntryComment token in its place
+//     among the entries. A slash-dashed children block after the node's
+//     closing '}' is also a KindEntryComment token, after the children. A
+//     comment inside an entry, such as between a property's name and value,
+//     comes after the entry.
+//   - Any other comment, between nodes, is a KindComment token: a comment
+//     node.
+//
+// When writing, a blank line is written after a comment node where it would
+// otherwise be read as the comment of the node that follows, or be joined
+// with the line comment that follows.
 //
 // The kuddle package builds on this package to convert between KDL documents
 // and Go values.
@@ -59,9 +81,11 @@ func WithVersion(v Version) Options {
 }
 
 // WithNewline sets the line ending of the lines an Encoder writes, which is
-// "\n" or "\r\n". The default is "\n". The text of comments and strings is
-// written as it is, whatever newlines it holds (see the options of
-// kuddle.Document.Format).
+// "\n" or "\r\n". By default, it is "\n", and the newlines inside comments are
+// written as they are. If it is set, it applies to the newlines inside block
+// comments as well as to those between line comments. The text of strings and
+// slash-dashed parts, which can hold strings, is always written as it is (see
+// the options of kuddle.Document.Format).
 //
 // WithNewline panics if newline is neither.
 func WithNewline(newline string) Options {
@@ -92,6 +116,13 @@ func QuoteIdentifiers(v bool) Options {
 	return kdlopts.Bool(kdlopts.QuoteIdentifiers, v)
 }
 
+// DiscardComments sets whether an Encoder leaves out comments: comment nodes,
+// comment entries, and the comments of nodes. It applies to both KDL
+// versions.
+func DiscardComments(v bool) Options {
+	return kdlopts.Bool(kdlopts.DiscardComments, v)
+}
+
 // RejectMultipleChildrenBlocks sets whether a Decoder limits a node to one
 // children block, slash-dashed or not, as the v1 grammar does. By default, it
 // allows slash-dashed children blocks around the node's one real block, like
@@ -111,12 +142,13 @@ func RejectDuplicateProperties(v bool) Options {
 	return kdlopts.Bool(kdlopts.RejectDuplicateProperties, v)
 }
 
-// WithMaxTokenSize sets the maximum number of bytes of input that a Decoder
-// holds to read a single token, such as a string or comment, which is
-// unlimited by default or if n is zero. Reading a larger token is an error
-// that wraps ErrTokenTooLarge. It limits only the input of one token, not
-// that of a *bytes.Buffer, which the Decoder holds in full. It applies to
-// both KDL versions.
+// WithMaxTokenSize sets the maximum number of bytes of input a Decoder holds
+// to read a single token, such as a string or comment. Zero, the default,
+// means no limit. Reading a larger token is an error that wraps
+// ErrTokenTooLarge. The limit applies to the input of one token only: it
+// doesn't limit a *bytes.Buffer, which the Decoder holds in full, or the text
+// of a slash-dashed part, which it keeps as a Comment. It applies to both KDL
+// versions.
 //
 // WithMaxTokenSize panics if n is negative.
 func WithMaxTokenSize(n int) Options {

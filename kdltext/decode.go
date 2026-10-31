@@ -1,6 +1,7 @@
 package kdltext
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 
@@ -40,9 +41,36 @@ type Decoder struct {
 
 	frames []frame // the nodes being parsed, innermost last
 	depth  int     // nesting of children blocks, including slash-dashed ones
+
+	// semicolon is the position of the ';' that ended the node being
+	// emitted, if hasSemicolon: the position of its KindEnd token, which is
+	// pushed after the comments on the rest of the line are read.
+	semicolon    Position
+	hasSemicolon bool
+
+	// Comments are collected as they are read, as mode says. Between nodes,
+	// they are held in pending until the next node, or the end of the block,
+	// decides whether the last is the node's comment. Within the line of a
+	// node being emitted, they are its comment entries, which are held while
+	// an entry is being read, so that they come after it. A slash-dashed part
+	// is recorded in raw while slash is positive, and becomes one comment.
+	lookRaw     []byte // the raw text of look
+	mode        commentMode
+	pending     []posComment
+	joinable    bool // whether a line comment on the next line joins the last pending comment
+	attached    bool // whether the last pending comment is directly above what follows
+	held        []posComment
+	inEntry     int // the depth of entries (or a node's name) being read
+	slash       int
+	slashPos    Position // the position of the outermost "/-"
+	raw         []byte
+	rawEnd      int          // the length of raw up to the end of its last token that isn't space or a comment
+	rawComments []posComment // the comments recorded in raw after rawEnd
+	lineStart   bool         // whether only whitespace has been read on this line
 }
 
 // lexToken is a token read by the lexer, detached from the lexer's buffer.
+// Its raw text is kept in Decoder.lookRaw while it is the next token.
 type lexToken struct {
 	lexer.Token
 	pos Position
@@ -61,6 +89,24 @@ func (t lexToken) String() string {
 		return s
 	}
 	return t.Token.String()
+}
+
+// commentMode is where the Decoder puts the comments it reads.
+type commentMode byte
+
+const (
+	modeLine   commentMode = iota // between nodes: pending
+	modeNode                      // within the line of a node being emitted: comment entries
+	modeHold                      // held, to be decided later
+	modeClosed                    // after the '}' of a node: comment entries if slash-dashed, else pending
+)
+
+// posComment is a comment, the position of its start, and the input offset
+// after it.
+type posComment struct {
+	Comment
+	pos Position
+	end int64
 }
 
 type queued struct {
@@ -91,6 +137,7 @@ func NewDecoder(r io.Reader, opts ...Options) *Decoder {
 		lex:            l,
 		opts:           o,
 		strictChildren: o.Flags&kdlopts.RejectMultipleChildrenBlocks != 0,
+		lineStart:      true,
 	}
 	if o.Flags&kdlopts.RejectDuplicateProperties != 0 {
 		d.props = make(map[string]struct{})
@@ -150,11 +197,13 @@ func (d *Decoder) Pos() Position { return d.pos }
 
 // InputOffset returns the input byte offset just past the last token read:
 // past the name of a KindNode or KindProp token, the value of a KindValue
-// token, and, for a KindEnd token, the newline, ';' or line comment that
-// ended the node, after the '}' of its children if it has them. For a node
-// ended by the end of the input, or by the '}' of its parent's children, it
-// is past the last of the node's input other than whitespace. InputOffset is
-// zero before the first token is read.
+// token, the comment of a comment token, and, for a KindEnd token, the
+// newline, ';' or line comment that ended the node, after the '}' of its
+// children if it has them. For a node ended by the end of the input, or by
+// the '}' of its parent's children, it is past the last of the node's input
+// other than whitespace. The comments within an entry, or before a node's
+// name, are read after it, and leave the offset past it. InputOffset is zero
+// before the first token is read.
 func (d *Decoder) InputOffset() int64 { return d.offset }
 
 // StackDepth returns the number of nodes that have been started but not
@@ -210,6 +259,7 @@ const maxNestingDepth = kdlopts.MaxNestingDepth
 type frame struct {
 	name  Value
 	emit  bool // whether the node's tokens are emitted, rather than slash-dashed
+	slash bool // whether the node is a slash-dashed part, ended with the node
 	st    nodeState
 	space bool // whether whitespace precedes the next token among the node's entries
 
@@ -224,7 +274,8 @@ type blockKind byte
 const (
 	noBlock      blockKind = iota
 	emitBlock              // the children of an emitted node, which are emitted
-	discardBlock           // the children of a slash-dashed node, or a slash-dashed block
+	discardBlock           // the children of a slash-dashed node
+	slashBlock             // a slash-dashed children block, a slash-dashed part of its own
 )
 
 // nodeState is the state of the entries of a node being parsed.
@@ -263,6 +314,9 @@ func (d *Decoder) parseNext() error {
 			return d.errorf(f.brace, "unterminated children block")
 		case f != nil:
 			return d.errorf(t, "unexpected end of input: missing '}' for the children of node %s", lexer.Quote(f.name.String()))
+		case len(d.pending) > 0:
+			d.flushPending()
+			return nil
 		}
 		return io.EOF
 	case lexer.RBrace:
@@ -271,28 +325,45 @@ func (d *Decoder) parseNext() error {
 		}
 		d.advance()
 		d.depth--
-		if f.block == emitBlock {
+		block := f.block
+		f.block, f.space = noBlock, false
+		switch block {
+		case slashBlock:
+			d.endSlashdash()
+		case emitBlock:
+			d.flushPending()
 			f.st = nodeState{children: true, opened: true, closed: true}
 			f.end = t.pos
+			d.mode = modeClosed
 		}
-		f.block, f.space = noBlock, false
 		return nil
 	case lexer.Slashdash:
+		if !discard {
+			d.beginSlashdash()
+		}
 		d.advance()
 		if err := d.skipSlashdashSpace(); err != nil {
 			return err
 		}
-		return d.startNode(false)
+		return d.startNode(false, !discard)
 	}
-	return d.startNode(!discard)
+	return d.startNode(!discard, false)
 }
 
 // startNode parses the type annotation and name of a node, and begins
-// parsing the rest of it. If emit is set, its KindNode token is emitted.
-func (d *Decoder) startNode(emit bool) error {
+// parsing the rest of it. If emit is set, its KindNode token is emitted. If
+// slash is set, the node is a slash-dashed part, ended with the node.
+func (d *Decoder) startNode(emit, slash bool) error {
 	start, err := d.peek()
 	if err != nil {
 		return err
+	}
+	var comment Comment
+	if emit {
+		comment = d.takeComment()
+		d.mode = modeNode
+		// Comments before the name come after the node's token.
+		d.inEntry++
 	}
 	typ, err := d.parseType()
 	if err != nil {
@@ -315,9 +386,11 @@ func (d *Decoder) startNode(emit bool) error {
 	name := valueOf(typ, t, d.lex.Version())
 	if emit {
 		clear(d.props)
-		d.push(Token{Kind: KindNode, Value: name}, start.pos, t.end)
+		d.push(Token{Kind: KindNode, Value: name, Comment: comment}, start.pos, t.end)
+		d.inEntry--
+		d.pushHeld()
 	}
-	d.frames = append(d.frames, frame{name: name, emit: emit})
+	d.frames = append(d.frames, frame{name: name, emit: emit, slash: slash})
 	return nil
 }
 
@@ -340,6 +413,12 @@ func (d *Decoder) parseRest(f *frame) error {
 	switch t.Kind {
 	case lexer.Semicolon:
 		d.advance()
+		if emit {
+			d.semicolon, d.hasSemicolon = t.pos, true
+			if err := d.lineEnd(); err != nil {
+				return err
+			}
+		}
 		return d.endNode()
 	case lexer.Newline, lexer.LineComment:
 		d.advance()
@@ -361,9 +440,15 @@ func (d *Decoder) parseRest(f *frame) error {
 		if !emit {
 			return d.openBlock(f, discardBlock)
 		}
-		return d.openBlock(f, emitBlock)
+		if err := d.openBlock(f, emitBlock); err != nil {
+			return err
+		}
+		err := d.lineEnd()
+		d.mode = modeLine
+		return err
 
 	case lexer.Slashdash:
+		d.beginSlashdash()
 		d.advance()
 		if err := d.skipSlashdashSpace(); err != nil {
 			return err
@@ -383,14 +468,17 @@ func (d *Decoder) parseRest(f *frame) error {
 				return d.errorf(next, "node %s has more than one children block", lexer.Quote(f.name.String()))
 			}
 			f.st.children = true
-			return d.openBlock(f, discardBlock)
+			return d.openBlock(f, slashBlock)
 		case f.st.children:
 			return d.errorf(next, "arguments and properties of node %s must come before its children", lexer.Quote(f.name.String()))
 		case !isEntryStart(next):
 			return d.errorf(next, "expected an argument, property or children after '/-', found %s", describe(next))
 		}
-		f.space, err = d.parseEntry(false)
-		return err
+		if f.space, err = d.parseEntry(false); err != nil {
+			return err
+		}
+		d.endSlashdashSpace()
+		return nil
 	}
 
 	switch {
@@ -423,9 +511,20 @@ func (d *Decoder) endNode() error {
 	d.frames = d.frames[:len(d.frames)-1]
 	switch {
 	case f.st.closed:
+		d.mode = modeLine
+		// Comments after the '}' on its line are not those of the next node.
+		d.joinable, d.attached = false, false
 		d.push(Token{Kind: KindEnd, Children: true}, f.end, d.read)
 	case f.emit:
-		d.push(Token{Kind: KindEnd}, d.endPos(), d.read)
+		d.mode = modeLine
+		pos := d.endPos()
+		if d.hasSemicolon {
+			pos, d.hasSemicolon = d.semicolon, false
+		}
+		d.push(Token{Kind: KindEnd}, pos, d.read)
+	}
+	if f.slash {
+		d.endSlashdashSpace()
 	}
 	return nil
 }
@@ -440,6 +539,13 @@ func (d *Decoder) oneBlock() bool {
 // parseEntry parses an argument or property. It reports whether it consumed
 // whitespace after the entry while looking for a property's '='.
 func (d *Decoder) parseEntry(emit bool) (space bool, err error) {
+	// Comments within the entry come after it, as comment entries.
+	d.inEntry++
+	defer func() {
+		if d.inEntry--; d.inEntry == 0 && d.mode == modeNode {
+			d.pushHeld()
+		}
+	}()
 	start, err := d.peek()
 	if err != nil {
 		return false, err
@@ -693,24 +799,192 @@ func (d *Decoder) peek() (lexToken, error) {
 	if err != nil {
 		return lexToken{}, syntaxError(err)
 	}
+	d.lookRaw = append(d.lookRaw[:0], t.Raw()...)
 	var src string
 	switch t.Kind {
 	case lexer.Ident, lexer.String, lexer.RawString, lexer.Number:
-		src = string(t.Raw())
+		src = string(d.lookRaw)
 	}
 	pos := Position(d.lex.Pos())
-	// The text of other tokens is fixed.
-	d.look, d.hasLook = lexToken{lexer.Token{Kind: t.Kind}, pos, pos.Offset + int64(len(t.Raw())), src}, true
+	// The text of other tokens is fixed, or only needed raw.
+	d.look, d.hasLook = lexToken{lexer.Token{Kind: t.Kind}, pos, pos.Offset + int64(len(d.lookRaw)), src}, true
 	return d.look, nil
 }
 
-// advance consumes the token returned by peek.
+// advance consumes the token returned by peek, collecting it if it is a
+// comment.
 func (d *Decoder) advance() {
 	d.hasLook = false
-	if d.look.Kind != lexer.Whitespace {
+	k := d.look.Kind
+	if k != lexer.Whitespace {
 		d.read = d.look.end
 	}
+	switch {
+	case d.slash > 0:
+		d.raw = append(d.raw, d.lookRaw...)
+		switch k {
+		case lexer.Whitespace, lexer.Newline, lexer.Escline:
+		case lexer.LineComment:
+			d.rawComments = append(d.rawComments, posComment{Comment{Kind: CommentLine, Text: lineText(d.lookRaw)}, d.look.pos, d.look.end})
+		case lexer.BlockComment:
+			d.rawComments = append(d.rawComments, posComment{Comment{Kind: CommentBlock, Text: blockText(d.lookRaw)}, d.look.pos, d.look.end})
+		default:
+			d.rawEnd, d.rawComments = len(d.raw), d.rawComments[:0]
+		}
+	case k == lexer.LineComment:
+		d.addComment(Comment{Kind: CommentLine, Text: lineText(d.lookRaw)}, d.look.pos, d.look.end)
+	case k == lexer.BlockComment:
+		d.addComment(Comment{Kind: CommentBlock, Text: blockText(d.lookRaw)}, d.look.pos, d.look.end)
+	case k == lexer.Newline && d.lineStart && d.mode == modeLine:
+		// A blank line ends a comment, and separates it from what follows.
+		d.joinable, d.attached = false, false
+	}
+	switch k {
+	case lexer.Newline:
+		d.lineStart = true
+	case lexer.Whitespace:
+	default:
+		d.lineStart = false
+	}
 }
+
+// addComment adds a comment read at pos, which ends at the offset end, as the
+// mode says.
+func (d *Decoder) addComment(c Comment, pos Position, end int64) {
+	switch {
+	case d.mode == modeLine, d.mode == modeClosed && c.Kind != CommentSlashdash:
+		d.addPending(c, pos, end)
+	case d.mode == modeHold || d.inEntry > 0:
+		d.held = append(d.held, posComment{c, pos, end})
+	default:
+		d.push(Token{Kind: KindEntryComment, Comment: c}, pos, end)
+	}
+}
+
+// addPending adds a comment read between nodes. A line comment directly below
+// another joins it.
+func (d *Decoder) addPending(c Comment, pos Position, end int64) {
+	if n := len(d.pending); n > 0 && d.joinable && c.Kind == CommentLine {
+		d.pending[n-1].Text += "\n" + c.Text
+		d.pending[n-1].end = end
+	} else {
+		d.pending = append(d.pending, posComment{c, pos, end})
+	}
+	d.joinable = c.Kind == CommentLine
+	d.attached = true
+}
+
+// takeComment returns the comment of the node that starts next: the last
+// pending comment, if it is directly above the node and not slash-dashed.
+// The other pending comments become comment nodes before it.
+func (d *Decoder) takeComment() Comment {
+	var c Comment
+	if n := len(d.pending); n > 0 && d.attached && d.pending[n-1].Kind != CommentSlashdash {
+		c = d.pending[n-1].Comment
+		d.pending = d.pending[:n-1]
+	}
+	d.flushPending()
+	return c
+}
+
+// flushPending emits the pending comments as comment nodes.
+func (d *Decoder) flushPending() {
+	for _, c := range d.pending {
+		d.push(Token{Kind: KindComment, Comment: c.Comment}, c.pos, c.end)
+	}
+	d.pending = d.pending[:0]
+	d.joinable, d.attached = false, false
+}
+
+// pushHeld emits the held comments as comment entries.
+func (d *Decoder) pushHeld() {
+	for _, c := range d.held {
+		d.push(Token{Kind: KindEntryComment, Comment: c.Comment}, c.pos, c.end)
+	}
+	d.held = d.held[:0]
+}
+
+// beginSlashdash starts recording a slash-dashed part, whose "/-" is the next
+// token. A slash-dashed part within one is recorded as part of it.
+func (d *Decoder) beginSlashdash() {
+	if d.slash == 0 {
+		d.raw, d.rawEnd, d.rawComments = d.raw[:0], 0, d.rawComments[:0]
+		d.slashPos = d.look.pos
+	}
+	d.slash++
+}
+
+func (d *Decoder) endSlashdash() {
+	if d.slash--; d.slash == 0 {
+		end := d.slashPos.Offset + int64(len(bytes.TrimRightFunc(d.raw, isSpace)))
+		d.addComment(Comment{Kind: CommentSlashdash, Text: slashdashText(d.raw)}, d.slashPos, end)
+	}
+}
+
+// endSlashdashSpace ends a slash-dashed entry or node, without the space read
+// after it, such as while looking for a property's '='. A line continuation
+// left in the text would swallow what follows it when written. The comments
+// in that space are read as if the part had ended before it, as they are
+// after an entry that isn't a string.
+func (d *Decoder) endSlashdashSpace() {
+	if d.slash > 1 {
+		d.endSlashdash()
+		return
+	}
+	d.raw = d.raw[:d.rawEnd]
+	d.endSlashdash()
+	for _, c := range d.rawComments {
+		d.addComment(c.Comment, c.pos, c.end)
+	}
+}
+
+// lineEnd reads the comments after the '{' or ';' of a node being emitted,
+// which are its comment entries if they end the line. If something else
+// follows on the line, they are left for it.
+func (d *Decoder) lineEnd() error {
+	d.mode = modeHold
+	defer func() { d.mode = modeNode }()
+	for {
+		t, err := d.peek()
+		if err != nil {
+			return err
+		}
+		switch t.Kind {
+		case lexer.Whitespace, lexer.BlockComment:
+			d.advance()
+			continue
+		case lexer.LineComment:
+			d.advance()
+		case lexer.Newline, lexer.EOF:
+		default:
+			for _, c := range d.held {
+				d.addPending(c.Comment, c.pos, c.end)
+			}
+			d.held = d.held[:0]
+			return nil
+		}
+		d.pushHeld()
+		return nil
+	}
+}
+
+// lineText returns the text of the line comment raw: all of it after the
+// "//".
+func lineText(raw []byte) string { return string(raw[2:]) }
+
+// blockText returns the text of the block comment raw: all of it between the
+// "/*" and "*/".
+func blockText(raw []byte) string { return string(raw[2 : len(raw)-2]) }
+
+// slashdashText returns the text of the slash-dashed part raw: all of it
+// after the "/-", up to the end of the part.
+func slashdashText(raw []byte) string {
+	return string(bytes.TrimRightFunc(raw[2:], isSpace))
+}
+
+// isSpace reports whether r is whitespace or a newline. A BOM is too, since
+// it may start the document.
+func isSpace(r rune) bool { return lexer.IsSpace(r) || lexer.IsNewline(r) || r == '\uFEFF' }
 
 // push adds t, which starts at pos and whose input ends at the offset end, to
 // the queue.

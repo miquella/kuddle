@@ -706,10 +706,13 @@ func TestBadTags(t *testing.T) {
 		}{}, "a props field can't be a map[string]kuddle.Document"},
 		{&struct {
 			A kuddle.Entry `kdl:"a"`
-		}{}, "a child field can't be a kuddle.Entry: an Entry is an argument"},
+		}{}, "a child field can't be a kuddle.Entry: an Entry is an argument, property or comment, not a node"},
 		{&struct {
 			A map[string][]kuddle.Entry `kdl:",children"`
 		}{}, "a children field can't be a map[string][]kuddle.Entry"},
+		{&struct {
+			A *kdltext.Comment `kdl:"a"`
+		}{}, "a child field can't be a *kdltext.Comment: a kdltext.Comment is a comment, not a node"},
 	}
 	for _, tt := range tests {
 		err := kuddle.Unmarshal([]byte("a"), tt.v)

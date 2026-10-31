@@ -1,10 +1,12 @@
 package kdltext
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/miquella/kuddle/internal/kdlopts"
 	"github.com/miquella/kuddle/internal/lexer"
@@ -14,23 +16,26 @@ import (
 //
 // Each node is written on its own line, with its children indented inside
 // braces, or as {} if it has an empty children block (see Token.Children).
-// Strings, names and numbers read by a Decoder are written as they were
-// read, if the version being written allows that form. Others are written as
-// bare identifiers where the version allows, and as quoted strings otherwise
-// (see QuoteIdentifiers); one that is not valid UTF-8 is an error. To change
-// the style of a document, see the Format method of kuddle.Document.
+// Strings, names and numbers read by a Decoder are written as they were read,
+// if the version being written allows that form. Others are written as bare
+// identifiers where the version allows, and as quoted strings otherwise (see
+// QuoteIdentifiers); one that is not valid UTF-8 is an error. Comments are
+// written where they belong (see the package documentation), with their text
+// as it is, other than the newlines of block comments (see WithNewline). To change the style of a document, see the Format method of kuddle.Document.
 //
 // Output is buffered until each top-level node ends. Nodes may be nested in
 // up to 10000 children blocks; a node nested deeper is an error.
 type Encoder struct {
-	w        io.Writer
-	opts     *kdlopts.Struct // the options of NewEncoder (see Options)
-	buf      []byte
-	flushed  int64 // the number of bytes written to w
-	version  Version
-	indent   string
-	newline  string // WithNewline
-	quoteIDs bool   // QuoteIdentifiers
+	w               io.Writer
+	opts            *kdlopts.Struct // the options of NewEncoder (see Options)
+	buf             []byte
+	flushed         int64 // the number of bytes written to w
+	version         Version
+	indent          string
+	discardComments bool   // DiscardComments
+	newline         string // WithNewline
+	newlineSet      bool   // whether WithNewline was given
+	quoteIDs        bool   // QuoteIdentifiers
 
 	// props holds the names of the properties of the current node, if a node
 	// may not repeat a property (see RejectDuplicateProperties); it is nil
@@ -38,15 +43,20 @@ type Encoder struct {
 	props map[string]struct{}
 
 	open []openNode
-	doc  level // the tokens written at the top level
-	err  error // sticky error
+	doc  level       // the tokens written at the top level
+	last CommentKind // the kind of the comment node just written, if any
+	err  error       // sticky error
 }
 
 // openNode is a node that has been started but not ended.
 type openNode struct {
 	level
-	opened bool  // whether its children block has been written
-	prop   Value // the name of the property whose value is next, if inProp
+	opened bool      // whether its children block has been written
+	after  []Comment // its comment entries after its children
+	line   string    // the text of a line comment entry to be written
+	inLine bool      // whether there is one
+	cont   bool      // whether a line continuation was just written
+	prop   Value     // the name of the property whose value is next, if inProp
 	inProp bool
 }
 
@@ -54,18 +64,27 @@ type openNode struct {
 // maxNestingDepth.
 var errTooDeep = fmt.Errorf("children blocks nested deeper than %d", maxNestingDepth)
 
-// NewEncoder returns an Encoder writing to w. The options that apply are
-// WithVersion, WithIndent, WithNewline, QuoteIdentifiers and
+// space writes the space before the next part of o's line.
+func (e *Encoder) space(o *openNode) {
+	if !o.cont {
+		e.buf = append(e.buf, ' ')
+	}
+	o.cont = false
+}
+
+// NewEncoder returns an Encoder writing to w. It accepts the options
+// WithVersion, WithIndent, WithNewline, DiscardComments, QuoteIdentifiers and
 // RejectDuplicateProperties.
 func NewEncoder(w io.Writer, opts ...Options) *Encoder {
 	o := kdlopts.Join(opts...)
 	e := &Encoder{
-		w:        w,
-		opts:     o,
-		version:  V2,
-		indent:   "    ",
-		newline:  "\n",
-		quoteIDs: o.Flags&kdlopts.QuoteIdentifiers != 0,
+		w:               w,
+		opts:            o,
+		version:         V2,
+		indent:          "    ",
+		newline:         "\n",
+		discardComments: o.Flags&kdlopts.DiscardComments != 0,
+		quoteIDs:        o.Flags&kdlopts.QuoteIdentifiers != 0,
 	}
 	if o.Present&kdlopts.Version != 0 {
 		e.version = Version(o.Version)
@@ -74,7 +93,7 @@ func NewEncoder(w io.Writer, opts ...Options) *Encoder {
 		e.indent = o.Indent
 	}
 	if o.Present&kdlopts.Newline != 0 {
-		e.newline = o.Newline
+		e.newline, e.newlineSet = o.Newline, true
 	}
 	if o.Flags&kdlopts.RejectDuplicateProperties != 0 {
 		e.props = make(map[string]struct{})
@@ -136,14 +155,29 @@ func (e *Encoder) write(t Token) error {
 	if n := len(e.open); n > 0 && e.open[n-1].inProp && t.Kind != KindValue {
 		return fmt.Errorf("%s after property %s, before its value", t.Kind, lexer.Quote(e.open[n-1].prop.String()))
 	}
+	if e.discardComments {
+		switch t.Kind {
+		case KindComment, KindEntryComment:
+			return e.checkEntry(t)
+		case KindNode:
+			t.Comment = Comment{}
+		}
+	}
 	switch t.Kind {
 	case KindNode:
+		if t.Comment.Kind == CommentSlashdash {
+			return errors.New("a node's comment can't be slash-dashed")
+		}
 		if len(e.open) > maxNestingDepth {
 			return errTooDeep
 		}
-		if n := len(e.open); n > 0 && !e.open[n-1].opened {
-			e.buf = append(append(e.buf, " {"...), e.newline...)
-			e.open[n-1].opened = true
+		e.openChildren()
+		e.separate(t.Comment.Kind, true)
+		e.last = 0
+		if t.Comment.Kind != 0 {
+			if err := e.writeLines(t.Comment); err != nil {
+				return err
+			}
 		}
 		e.writeIndent(len(e.open))
 		if t.Value.Kind() != ValueString {
@@ -160,15 +194,11 @@ func (e *Encoder) write(t Token) error {
 		e.open = append(e.open, openNode{})
 		clear(e.props)
 
-	case KindValue, KindProp:
-		n := len(e.open)
-		switch {
-		case n == 0:
-			return fmt.Errorf("%s outside of a node", t.Kind)
-		case e.open[n-1].opened:
-			return fmt.Errorf("%s after the node's children", t.Kind)
+	case KindValue, KindProp, KindEntryComment:
+		if err := e.checkEntry(t); err != nil {
+			return err
 		}
-		o := &e.open[n-1]
+		o := &e.open[len(e.open)-1]
 		if t.Kind == KindProp {
 			if t.Value.Kind() != ValueString {
 				return errors.New("a property's name must be a string")
@@ -191,8 +221,26 @@ func (e *Encoder) write(t Token) error {
 			t, name = Token{Kind: KindProp, Value: t.Value}, o.prop
 			o.inProp = false
 		}
-		if err := e.writeEntry(t, name); err != nil {
+		switch {
+		case t.Kind == KindEntryComment && o.opened:
+			// Written after the '}'.
+			o.after = append(o.after, t.Comment)
+		default:
+			return e.writeEntry(o, t, name)
+		}
+
+	case KindComment:
+		if err := e.checkComment(t.Comment, false); err != nil {
 			return err
+		}
+		e.openChildren()
+		e.separate(t.Comment.Kind, false)
+		if err := e.writeLines(t.Comment); err != nil {
+			return err
+		}
+		e.last = t.Comment.Kind
+		if len(e.open) == 0 {
+			return e.flush()
 		}
 
 	case KindEnd:
@@ -200,18 +248,33 @@ func (e *Encoder) write(t Token) error {
 		if n == 0 {
 			return errors.New("end outside of a node")
 		}
-		switch o := e.open[n-1]; {
-		case o.opened:
-			e.writeIndent(n - 1)
-			e.buf = append(e.buf, '}')
-		case !t.Children:
+		o := &e.open[n-1]
+		switch {
+		case !t.Children || o.opened:
 		case n > maxNestingDepth:
 			return errTooDeep
+		case !o.inLine:
+			e.space(o)
+			e.buf = append(e.buf, "{}"...)
 		default:
-			e.buf = append(e.buf, " {}"...)
+			e.openChildren()
+		}
+		if o.opened {
+			e.writeIndent(n - 1)
+			e.buf = append(e.buf, '}')
+			for _, c := range o.after {
+				e.continueLine(o)
+				e.writeEntryComment(o, c)
+			}
+		}
+		if o.inLine {
+			e.space(o)
+			e.buf = append(e.buf, "//"...)
+			e.buf = append(e.buf, o.line...)
 		}
 		e.buf = append(e.buf, e.newline...)
 		e.open = e.open[:n-1]
+		e.last = 0
 		if len(e.open) == 0 {
 			return e.flush()
 		}
@@ -222,10 +285,32 @@ func (e *Encoder) write(t Token) error {
 	return nil
 }
 
-// writeEntry writes the argument or property t of the current node. A
-// KindProp token holds the property's value, and name its name.
-func (e *Encoder) writeEntry(t Token, name Value) error {
-	e.buf = append(e.buf, ' ')
+// checkEntry reports whether the entry or comment token t can be written
+// where it is.
+func (e *Encoder) checkEntry(t Token) error {
+	n := len(e.open)
+	switch {
+	case t.Kind == KindComment:
+		return e.checkComment(t.Comment, false)
+	case n == 0:
+		return fmt.Errorf("%s outside of a node", t.Kind)
+	case t.Kind == KindEntryComment:
+		return e.checkComment(t.Comment, true)
+	case e.open[n-1].opened:
+		return fmt.Errorf("%s after the node's children", t.Kind)
+	}
+	return nil
+}
+
+// writeEntry writes the entry t of o, before its children. A KindProp token
+// holds the property's value, and name its name.
+func (e *Encoder) writeEntry(o *openNode, t Token, name Value) error {
+	e.continueLine(o)
+	if t.Kind == KindEntryComment {
+		e.writeEntryComment(o, t.Comment)
+		return nil
+	}
+	e.space(o)
 	if t.Kind == KindProp {
 		if err := e.writeStringValue(name, !e.quoteIDs); err != nil {
 			return err
@@ -233,6 +318,178 @@ func (e *Encoder) writeEntry(t Token, name Value) error {
 		e.buf = append(e.buf, '=')
 	}
 	return e.writeValue(t.Value)
+}
+
+// separate writes a blank line after the comment node just written, if any,
+// where it would otherwise be read with what follows: a comment of kind next,
+// which is a node's if node is set. Line comments would be joined, and a
+// node without a comment would take the comment node as its own.
+func (e *Encoder) separate(next CommentKind, node bool) {
+	switch {
+	case e.last == CommentLine && next == CommentLine,
+		node && next == 0 && (e.last == CommentLine || e.last == CommentBlock):
+		e.buf = append(e.buf, e.newline...)
+	}
+}
+
+// openChildren writes the start of the current node's children block, if it
+// has not been written, ending the node's line.
+func (e *Encoder) openChildren() {
+	n := len(e.open)
+	if n == 0 || e.open[n-1].opened {
+		return
+	}
+	o := &e.open[n-1]
+	e.space(o)
+	e.buf = append(e.buf, '{')
+	// A line comment that ends the line goes after the '{'.
+	if o.inLine {
+		e.buf = append(e.buf, " //"...)
+		e.buf = append(e.buf, o.line...)
+		o.inLine = false
+	}
+	e.buf = append(e.buf, e.newline...)
+	o.opened = true
+	e.last = 0
+}
+
+// continueLine writes the line comment entry of o, if there is one to be
+// written, with a line continuation, as something follows it on the line.
+func (e *Encoder) continueLine(o *openNode) {
+	if !o.inLine {
+		return
+	}
+	e.space(o)
+	e.buf = append(e.buf, `\ //`...)
+	e.buf = append(e.buf, o.line...)
+	e.buf = append(e.buf, e.newline...)
+	e.writeIndent(len(e.open))
+	o.inLine, o.cont = false, true
+}
+
+// writeEntryComment writes the comment entry c of o. A line comment is held
+// until what follows it is known, since it ends the line.
+func (e *Encoder) writeEntryComment(o *openNode, c Comment) {
+	switch c.Kind {
+	case CommentLine:
+		o.line, o.inLine = c.Text, true
+	case CommentBlock:
+		e.space(o)
+		e.appendBlock(c.Text)
+	case CommentSlashdash:
+		e.space(o)
+		e.buf = append(e.buf, "/-"...)
+		e.buf = append(e.buf, c.Text...)
+	}
+}
+
+// writeLines writes c on lines of its own, in the current block.
+func (e *Encoder) writeLines(c Comment) error {
+	if err := e.checkComment(c, false); err != nil {
+		return err
+	}
+	depth := len(e.open)
+	switch c.Kind {
+	case CommentLine:
+		for line := range strings.SplitSeq(c.Text, "\n") {
+			e.writeIndent(depth)
+			e.buf = append(e.buf, "//"...)
+			e.buf = append(e.buf, strings.TrimSuffix(line, "\r")...)
+			e.buf = append(e.buf, e.newline...)
+		}
+	case CommentBlock:
+		e.writeIndent(depth)
+		e.appendBlock(c.Text)
+		e.buf = append(e.buf, e.newline...)
+	case CommentSlashdash:
+		e.writeIndent(depth)
+		e.buf = append(e.buf, "/-"...)
+		e.buf = append(e.buf, c.Text...)
+		e.buf = append(e.buf, e.newline...)
+	}
+	return nil
+}
+
+// appendBlock appends a block comment of text s.
+func (e *Encoder) appendBlock(s string) {
+	if e.newlineSet {
+		s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+		s = strings.ReplaceAll(s, "\n", e.newline)
+	}
+	e.buf = append(e.buf, "/*"...)
+	e.buf = append(e.buf, s...)
+	e.buf = append(e.buf, "*/"...)
+}
+
+// checkComment reports whether c can be written, within a line if inline is
+// set and on lines of its own otherwise.
+func (e *Encoder) checkComment(c Comment, inline bool) error {
+	if !utf8.ValidString(c.Text) {
+		return errors.New("comment is not valid UTF-8")
+	}
+	// Only v2 disallows characters, such as U+0001, in comments.
+	if i := strings.IndexFunc(c.Text, lexer.IsDisallowed); i >= 0 && e.version == V2 {
+		r, _ := utf8.DecodeRuneInString(c.Text[i:])
+		return fmt.Errorf("comment contains the disallowed character %U", r)
+	}
+	switch c.Kind {
+	case CommentLine:
+		// On lines of its own, each line of the text is a line comment.
+		text := c.Text
+		if !inline {
+			text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", ""), "\n", "")
+		}
+		// VT is a newline only in v2.
+		if strings.ContainsFunc(text, func(r rune) bool { return lexer.IsNewline(r) && (r != '\v' || e.version == V2) }) {
+			return fmt.Errorf("line comment %q can't span lines here", c.Text)
+		}
+	case CommentBlock:
+		if !e.lexesAs("/*"+c.Text+"*/", lexer.BlockComment) {
+			return fmt.Errorf("block comment %q is not valid: its /* and */ must be balanced", c.Text)
+		}
+	case CommentSlashdash:
+		doc := "/-" + c.Text
+		if inline {
+			doc = "n " + doc
+		}
+		if !e.isCommentedOut(doc, inline) {
+			return fmt.Errorf("slash-dashed %q is not valid KDL here", c.Text)
+		}
+	default:
+		return fmt.Errorf("invalid comment kind %q", c.Kind)
+	}
+	return nil
+}
+
+func (e *Encoder) lexesAs(s string, k lexer.Kind) bool {
+	l := lexer.New(bytes.NewBufferString(s), lexer.Version(e.version))
+	t, err := l.NextToken()
+	if err != nil || t.Kind != k {
+		return false
+	}
+	t, err = l.NextToken()
+	return err == nil && t.Kind == lexer.EOF
+}
+
+// isCommentedOut reports whether the document doc is a single slash-dashed
+// part: of the document, or of its single node n if inline is set.
+func (e *Encoder) isCommentedOut(doc string, inline bool) bool {
+	d := NewDecoder(bytes.NewBufferString(doc), WithVersion(e.version))
+	var toks []Token
+	for {
+		t, err := d.ReadToken()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false
+		}
+		toks = append(toks, t)
+	}
+	if !inline {
+		return len(toks) == 1 && toks[0].Kind == KindComment && toks[0].Comment.Kind == CommentSlashdash
+	}
+	return len(toks) == 3 && toks[1].Kind == KindEntryComment && toks[1].Comment.Kind == CommentSlashdash
 }
 
 func (e *Encoder) flush() error {

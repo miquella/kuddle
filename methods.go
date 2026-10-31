@@ -40,6 +40,7 @@ var (
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 	valueType    = reflect.TypeFor[kdltext.Value]()
+	commentType  = reflect.TypeFor[kdltext.Comment]()
 	nodeType     = reflect.TypeFor[Node]()
 	entryType    = reflect.TypeFor[Entry]()
 	documentType = reflect.TypeFor[Document]()

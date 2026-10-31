@@ -4,11 +4,13 @@ package kdltext
 type Kind byte
 
 const (
-	KindInvalid Kind = 0
-	KindNode    Kind = 'n' // the start of a node
-	KindValue   Kind = 'v' // an argument, or the value of the property before it
-	KindProp    Kind = 'p' // the name of a property, whose value follows
-	KindEnd     Kind = 'e' // the end of the current node
+	KindInvalid      Kind = 0
+	KindNode         Kind = 'n' // the start of a node
+	KindValue        Kind = 'v' // an argument, or the value of the property before it
+	KindProp         Kind = 'p' // the name of a property, whose value follows
+	KindEntryComment Kind = 'i' // a comment among the entries of the current node
+	KindEnd          Kind = 'e' // the end of the current node
+	KindComment      Kind = 'c' // a comment between nodes
 )
 
 func (k Kind) String() string {
@@ -21,6 +23,10 @@ func (k Kind) String() string {
 		return "property"
 	case KindEnd:
 		return "end"
+	case KindEntryComment:
+		return "entry comment"
+	case KindComment:
+		return "comment"
 	}
 	return "invalid"
 }
@@ -50,6 +56,10 @@ type Token struct {
 	//
 	// It is the zero Value for other kinds of token.
 	Value Value
+
+	// Comment is the comment of a KindComment or KindEntryComment token, or
+	// the comment directly above the node of a KindNode token, if any.
+	Comment Comment
 }
 
 // Name returns the name of a KindNode or KindProp token.
@@ -61,10 +71,11 @@ func (t Token) Clone() Token {
 	return t
 }
 
-// Equal reports whether t and u are the same token. The values of tokens
-// that don't have one, such as KindEnd tokens, are not compared.
+// Equal reports whether t and u are the same token, comments included. The
+// values of tokens that don't have one, such as KindEnd tokens, are not
+// compared.
 func (t Token) Equal(u Token) bool {
-	if t.Kind != u.Kind || t.Children != u.Children {
+	if t.Kind != u.Kind || t.Children != u.Children || t.Comment != u.Comment {
 		return false
 	}
 	switch t.Kind {

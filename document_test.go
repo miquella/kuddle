@@ -2,6 +2,8 @@ package kuddle_test
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -62,8 +64,10 @@ func TestDocumentUnmarshalKDL(t *testing.T) {
 
 func TestUnmarshalDocument(t *testing.T) {
 	input := `
+// A comment.
 (t)a 1 k=(u8)2 "x" k=3 {
 	b #true; c
+	/- d
 }
 e {}
 ("")f ("")1
@@ -77,7 +81,8 @@ e {}
 		}, Children: []kuddle.Node{
 			{Name: "b", Entries: []kuddle.Entry{kuddle.Arg(kdltext.Bool(true))}},
 			{Name: "c"},
-		}},
+			{Kind: kuddle.NodeComment, Comment: kdltext.Comment{Kind: kdltext.CommentSlashdash, Text: " d"}},
+		}, Comment: kdltext.Comment{Kind: kdltext.CommentLine, Text: " A comment."}},
 		{Name: "e", Children: []kuddle.Node{}},
 		{Type: new(""), Name: "f", Entries: []kuddle.Entry{kuddle.Arg(typed("", num("1")))}},
 	}}
@@ -93,7 +98,7 @@ e {}
 		A kuddle.Document `kdl:"a"`
 	}
 	err := kuddle.Unmarshal([]byte(input), &v)
-	if want := "kuddle: cannot unmarshal node a (line 2, column 1) into Go kuddle.Document: a Document holds only nodes, not arguments or properties"; err == nil || err.Error() != want {
+	if want := "kuddle: cannot unmarshal node a (line 3, column 1) into Go kuddle.Document: a Document holds only nodes, not arguments or properties"; err == nil || err.Error() != want {
 		t.Errorf("a node with arguments:\ngot  %v\nwant %s", err, want)
 	}
 }
@@ -125,14 +130,106 @@ func TestUnmarshalDecodeChildren(t *testing.T) {
 	}
 }
 
-func TestEmptyChildren(t *testing.T) {
-	const input = "a {}\nb\nc {\n    d {}\n}\n"
+func TestDocumentComments(t *testing.T) {
+	line := func(s string) kdltext.Comment { return kdltext.Comment{Kind: kdltext.CommentLine, Text: s} }
+	const input = `// The first node.
+a 1 key=#true {
+    b x // after b
+    // the end of a's children
+}
+c
+// the end of the document
+`
 	var doc kuddle.Document
 	if err := kuddle.Unmarshal([]byte(input), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Nodes[0].Children == nil || doc.Nodes[1].Children != nil {
-		t.Errorf("got %+v, want a and c with children blocks, and b without", doc)
+	want := kuddle.Document{Nodes: []kuddle.Node{
+		{
+			Name:    "a",
+			Entries: []kuddle.Entry{kuddle.Arg(num("1")), kuddle.Prop("key", kdltext.Bool(true))},
+			Children: []kuddle.Node{
+				{Name: "b", Entries: []kuddle.Entry{
+					kuddle.Arg(kdltext.String("x")),
+					{Kind: kuddle.EntryComment, Comment: line(" after b")},
+				}},
+				{Kind: kuddle.NodeComment, Comment: line(" the end of a's children")},
+			},
+			Comment: line(" The first node."),
+		},
+		{Name: "c"},
+		{Kind: kuddle.NodeComment, Comment: line(" the end of the document")},
+	}}
+	if !doc.Equal(&want) {
+		t.Fatalf("got %+v\nwant %+v", doc, want)
+	}
+	out, err := kuddle.Marshal(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != input {
+		t.Errorf("written: got\n%s\nwant\n%s", out, input)
+	}
+
+	// Within a node, the comment entries after its children are discarded.
+	dec := kdltext.NewDecoder(strings.NewReader("a {\n    b\n} /- {\n    c\n}\n"))
+	dec.ReadToken()
+	var children kuddle.Document
+	if err := children.UnmarshalKDL(dec); err != nil {
+		t.Fatal(err)
+	}
+	if len(children.Nodes) != 1 || children.Nodes[0].Name != "b" {
+		t.Errorf("children: got %+v, want b", children)
+	}
+	if tok, err := dec.ReadToken(); err != nil || tok.Kind != kdltext.KindEnd {
+		t.Errorf("ReadToken() = %v, %v; want the end of a", tok, err)
+	}
+}
+
+// A Document can be changed and written back out, keeping its comments,
+// though not all of its blank lines.
+func ExampleDocument() {
+	const input = `// The server to listen on.
+server port=8080
+
+// Unused.
+
+// The users allowed.
+users alice bob
+`
+	var doc kuddle.Document
+	if err := kuddle.Unmarshal([]byte(input), &doc); err != nil {
+		panic(err)
+	}
+	users := &doc.Nodes[2]
+	fmt.Printf("%s: %q\n", users.Name, users.Comment.Text)
+	users.Entries = append(users.Entries, kuddle.Arg(kdltext.String("carol")))
+	users.Comment.Text = " The users allowed,\n and carol."
+
+	if err := kuddle.MarshalWrite(os.Stdout, &doc); err != nil {
+		panic(err)
+	}
+	// Output:
+	// users: " The users allowed."
+	// // The server to listen on.
+	// server port=8080
+	// // Unused.
+	//
+	// // The users allowed,
+	// // and carol.
+	// users alice bob carol
+}
+
+func TestEmptyChildren(t *testing.T) {
+	const input = "a {}\nb\nc {\n    d {}\n}\ncomment { // c\n}\nonly {\n    // only a comment\n}\nslashdashed /- { x } {}\n"
+	var doc kuddle.Document
+	if err := kuddle.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for i, n := range doc.Nodes {
+		if (n.Children == nil) != (i == 1) {
+			t.Errorf("%s: got children %#v", n.Name, n.Children)
+		}
 	}
 	out, err := kuddle.Marshal(&doc)
 	if err != nil {

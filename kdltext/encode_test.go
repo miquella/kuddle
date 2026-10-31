@@ -209,6 +209,36 @@ func TestEncoderQuoteIdentifiers(t *testing.T) {
 	}
 }
 
+func TestEncoderComments(t *testing.T) {
+	line := func(text string) kdltext.Comment { return kdltext.Comment{Kind: kdltext.CommentLine, Text: text} }
+	block := kdltext.Comment{Kind: kdltext.CommentBlock, Text: " x "}
+	toks := []kdltext.Token{
+		{Kind: kdltext.KindNode, Value: kdltext.String("a"), Comment: line(" a")},
+		val(kdltext.Int(1)),
+		{Kind: kdltext.KindEntryComment, Comment: block},
+		{Kind: kdltext.KindComment, Comment: line(" only a comment")},
+		endBlock,
+		{Kind: kdltext.KindComment, Comment: line(" b")},
+		node("b"), end,
+	}
+	tests := []struct {
+		opts []kdltext.Options
+		want string
+	}{
+		{nil, "// a\na 1 /* x */ {\n    // only a comment\n}\n// b\n\nb\n"},
+		{[]kdltext.Options{kdltext.DiscardComments(true)}, "a 1 {}\nb\n"},
+	}
+	for _, tt := range tests {
+		got, err := encode(toks, tt.opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tt.want {
+			t.Errorf("got %q, want %q", got, tt.want)
+		}
+	}
+}
+
 func TestEncoderIdentifiers(t *testing.T) {
 	tests := []struct {
 		name   string

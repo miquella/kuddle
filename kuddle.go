@@ -120,10 +120,10 @@
 //   - props: the remaining properties, those without a prop field, as a map
 //     keyed by name.
 //   - entries: the remaining arguments and properties, those without an arg
-//     or prop field, in order, as a []Entry. Marshal writes them after the
-//     arguments of the arg fields and before the properties of the prop
-//     fields. A struct with an entries field can't have an args or props
-//     field.
+//     or prop field, and the node's comment entries (see Node.Entries), in
+//     order, as a []Entry. Marshal writes them after the arguments of the arg
+//     fields and before the properties of the prop fields. A struct with an
+//     entries field can't have an args or props field.
 //   - children: the remaining child nodes, those without a child field, as a
 //     slice, or as a map keyed by name.
 //   - name: the node's name, as a string.
@@ -133,11 +133,12 @@
 //
 // The arg, args, prop and props fields hold values of value types, or of types
 // with methods (see Custom marshaling), other than Document, which holds only
-// nodes. A child or children field can't hold an Entry, even as the elements
-// of a slice or map: it is an argument or property rather than a node, and is
-// held by an entries field. The keys of the maps of props and children fields
-// are as for a map. The omitzero option has Marshal leave the field out if it
-// is zero, as reported by its IsZero method if it has one.
+// nodes. A child or children field can't hold an Entry or a kdltext.Comment,
+// even as the elements of a slice or map: they are entries and comments
+// rather than nodes, and are held by an entries field. The keys of the maps
+// of props and children fields are as for a map. The omitzero option has
+// Marshal leave the field out if it is zero, as reported by its IsZero method
+// if it has one.
 //
 // A field with the tag "-" is ignored, and so are unexported fields. The
 // fields of an embedded struct, or pointer to a struct, without a tag are
@@ -195,25 +196,28 @@
 //
 // # Documents
 //
-// A [Document] holds a document as it is: its nodes, and the arguments and
-// properties of each node, including repeated properties, in order, but not
-// its comments or formatting. Its MarshalKDL and UnmarshalKDL methods, which
-// implement Marshaler and Unmarshaler, write and read the document's nodes, or
-// the children of a node without arguments or properties. Where they can't be
-// called, as for a Document held in an interface, the tag of its Nodes field
-// has Marshal write the nodes all the same.
+// A [Document] holds a document as written: its nodes, each node's arguments
+// and properties in order (repeated properties included), and its comments,
+// as comment nodes and entries. It doesn't keep the formatting. Its
+// MarshalKDL and UnmarshalKDL methods write and read the document's nodes, or
+// the children of a node without arguments or properties. Where those
+// methods can't be called, such as for a Document held in an interface, the
+// tag on its Nodes field still has Marshal write the nodes.
 //
-// A [Node] holds a node as it is: its name, type annotation, entries and
-// children, where an [Entry] is an argument or property. Marshal and Unmarshal
-// write and read it themselves.
+// A [Node] holds a node as it is: its name, type annotation, entries, children
+// and comment, where an [Entry] is an argument, property or comment. Marshal
+// and Unmarshal write and read it themselves. Unmarshaling into any other Go
+// value passes over comments, except for a struct's entries field.
 //
 // # Formatting
 //
 // [Document.Format] and [Node.Format] change how a document is written, between
-// reading and writing it. By default they keep numbers and strings as they were
-// written. Their options are [FormatNumbers], [FormatEmptyBlocks],
-// [FormatSortProperties], [FormatQuoteValues], [FormatNormalizeStrings],
-// [FormatStringNewlines] and [FormatNewline].
+// reading and writing it. By default they only tidy its comments, keeping numbers and
+// strings as they were written. Their options are [FormatNumbers],
+// [FormatEmptyBlocks], [FormatSortProperties], [FormatQuoteValues],
+// [FormatNormalizeStrings], [FormatStringNewlines], [FormatLiteralComments],
+// [FormatIndent] and [FormatNewline]. The last two should match the options
+// the document is written with, kdltext.WithIndent and kdltext.WithNewline.
 package kuddle
 
 import (

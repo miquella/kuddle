@@ -26,12 +26,14 @@ const (
 	Newline
 	DiscardUnknown
 	QuoteIdentifiers
+	DiscardComments
 	RejectMultipleChildrenBlocks
 	RejectDuplicateProperties
 	MaxTokenSize
 
 	// boolOptions are the options whose value is held in Struct.Flags.
 	boolOptions = DiscardUnknown | QuoteIdentifiers |
+		DiscardComments |
 		RejectMultipleChildrenBlocks | RejectDuplicateProperties
 )
 

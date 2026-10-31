@@ -90,13 +90,14 @@ func TestReadToken(t *testing.T) {
 			"node a {", "end", "node b {", "end", "node c", "end",
 		}},
 		{"slashdash", "/-a 1\nb /-1 2 /-{ c } {\n /- d {}\n e\n} /- { f }", []string{
-			"node b {", "value number:2", "node e", "end", "end",
+			"comment", "node b {", "entry comment", "value number:2", "entry comment",
+			"comment", "node e", "end", "entry comment", "end",
 		}},
-		{"slashdashed children", "a /-{ b }", []string{"node a", "end"}},
+		{"slashdashed children", "a /-{ b }", []string{"node a", "entry comment", "end"}},
 		{"bare strings", "node arg key = value", []string{
 			"node node", "value string:arg", "prop key", "value string:value", "end",
 		}},
-		{"escline", "node \\ // comment\n  1", []string{"node node", "value number:1", "end"}},
+		{"escline", "node \\ // comment\n  1", []string{"node node", "entry comment", "value number:1", "end"}},
 		{"duplicate props", "n a=1 a=2", []string{"node n", "prop a", "value number:1", "prop a", "value number:2", "end"}},
 	}
 	for _, tt := range tests {
@@ -257,17 +258,17 @@ func TestRejectMultipleChildrenBlocks(t *testing.T) {
 		opts  []kdltext.Options
 		want  []string // nil if the input must fail
 	}{
-		{`node /-{ a } { b }`, []kdltext.Options{v1}, []string{"node node {", "node b", "end", "end"}},
-		{`node { b } /-{ a }`, []kdltext.Options{v1}, []string{"node node {", "node b", "end", "end"}},
-		{`node /-{} /-{}`, []kdltext.Options{v1}, []string{"node node", "end"}},
+		{`node /-{ a } { b }`, []kdltext.Options{v1}, []string{"node node {", "entry comment", "node b", "end", "end"}},
+		{`node { b } /-{ a }`, []kdltext.Options{v1}, []string{"node node {", "node b", "end", "entry comment", "end"}},
+		{`node /-{} /-{}`, []kdltext.Options{v1}, []string{"node node", "entry comment", "entry comment", "end"}},
 		{`node /-{ a } { b }`, []kdltext.Options{v1, strict}, nil},
 		{`node { b } /-{ a }`, []kdltext.Options{v1, strict}, nil},
 		{`node /-{} /-{}`, []kdltext.Options{v1, strict}, nil},
-		{`node /-{ a }`, []kdltext.Options{v1, strict}, []string{"node node", "end"}},
+		{`node /-{ a }`, []kdltext.Options{v1, strict}, []string{"node node", "entry comment", "end"}},
 		{`node { b }`, []kdltext.Options{v1, strict}, []string{"node node {", "node b", "end", "end"}},
 		// It does not apply to v2, and takes an undecided version as v2.
-		{`node /-{ a } { b }`, []kdltext.Options{kdltext.WithVersion(kdltext.V2), strict}, []string{"node node {", "node b", "end", "end"}},
-		{`node /-{ a } { b }`, []kdltext.Options{strict}, []string{"node node {", "node b", "end", "end"}},
+		{`node /-{ a } { b }`, []kdltext.Options{kdltext.WithVersion(kdltext.V2), strict}, []string{"node node {", "entry comment", "node b", "end", "end"}},
+		{`node /-{ a } { b }`, []kdltext.Options{strict}, []string{"node node {", "entry comment", "node b", "end", "end"}},
 		// Two blocks that are not slash-dashed are never allowed.
 		{`node { a } { b }`, []kdltext.Options{v1}, nil},
 	}
@@ -406,7 +407,8 @@ func TestInputOffset(t *testing.T) {
 	want := []string{
 		"node@1:1-1", "value@1:3-3", "property@1:5-5", "value@1:9-12", "end@1:13-13",
 		"node@2:1-14", "node@3:3-20", "value@3:5-24", "end@3:8-25", "end@4:1-27",
-		"node@5:1-28", "end@5:6-33", "node@6:1-34", "value@6:3-36", "end@6:5-36",
+		"node@5:1-28", "entry comment@5:3-32", "end@5:6-33",
+		"node@6:1-34", "value@6:3-36", "end@6:5-36",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("got  %q\nwant %q", got, want)
@@ -569,15 +571,15 @@ func TestLooseSpacing(t *testing.T) {
 		version kdltext.Version
 		want    []string // nil if the input must fail
 	}{
-		{`node "string"/-foo=1`, kdltext.V2, []string{"node node", "value string:string", "end"}},
-		{`node "string"/-{}`, kdltext.V2, []string{"node node", "value string:string", "end"}},
-		{`node "string" {}/-{}`, kdltext.V2, []string{"node node {", "value string:string", "end"}},
+		{`node "string"/-foo=1`, kdltext.V2, []string{"node node", "value string:string", "entry comment", "end"}},
+		{`node "string"/-{}`, kdltext.V2, []string{"node node", "value string:string", "entry comment", "end"}},
+		{`node "string" {}/-{}`, kdltext.V2, []string{"node node {", "value string:string", "entry comment", "end"}},
 		{`foo123{bar}`, kdltext.V2, []string{"node foo123 {", "node bar", "end", "end"}},
-		{`node "a"/-"b" "c"`, kdltext.V2, []string{"node node", "value string:a", "value string:c", "end"}},
+		{`node "a"/-"b" "c"`, kdltext.V2, []string{"node node", "value string:a", "entry comment", "value string:c", "end"}},
 		{`node "a"/-"b""c"`, kdltext.V2, nil},
 		{`node "a""b"`, kdltext.V2, nil},
 		// Detection takes the loose slash-dash as v2.
-		{`node "a"/-"b"`, 0, []string{"node node", "value string:a", "end"}},
+		{`node "a"/-"b"`, 0, []string{"node node", "value string:a", "entry comment", "end"}},
 		// It does not apply to v1.
 		{`node "a"/-"b"`, kdltext.V1, nil},
 	}

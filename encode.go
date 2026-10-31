@@ -205,6 +205,14 @@ func (e *encoder) node(v reflect.Value, name string, own, root bool) error {
 	if m, ok := asMarshaler[Marshaler](v); ok {
 		return e.marshaler(m, v, name, own, root)
 	}
+	if v.Type() == nodeType {
+		if n := pointerTo[Node](v); n.IsComment() {
+			if root {
+				return nil
+			}
+			return e.out.WriteToken(kdltext.Token{Kind: kdltext.KindComment, Comment: n.Comment})
+		}
+	}
 	if err := e.start(e.nodeToken(v, name, own, root), root); err != nil {
 		return err
 	}
@@ -223,7 +231,7 @@ func (e *encoder) nodeToken(v reflect.Value, name string, own, root bool) kdltex
 	case root:
 	case v.Type() == nodeType:
 		n := pointerTo[Node](v)
-		t.Value.Type = n.Type
+		t.Value.Type, t.Comment = n.Type, n.Comment
 		if own {
 			t.Value = kdltext.String(n.Name).WithType(t.Value.Type)
 		}
@@ -380,6 +388,9 @@ func (e *encoder) structContents(v reflect.Value, root bool) error {
 				if f := fs.props[en.Name]; f != nil {
 					return e.entryError(propRef(en.Name), fv.Type(), takenError("property", en.Name, f))
 				}
+			case e.open == 0 && !e.inNode:
+				// The document has no entries for a comment to be among.
+				continue
 			}
 			if err := e.entry(en, entryOf(en, args-1), fv.Type()); err != nil {
 				return err

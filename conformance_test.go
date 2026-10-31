@@ -82,17 +82,19 @@ func TestConformance(t *testing.T) {
 
 // suiteOptions returns the options that read and write documents as the
 // suite for version v does. Following its translation rules, documents are
-// written with properties sorted after the arguments, and
+// written without comments, with properties sorted after the arguments, and
 // with numbers in canonical form. The rules also leave out repeated
 // properties, which uniqueProps does.
 func suiteOptions(v kdltext.Version) kuddle.Options {
 	return kuddle.JoinOptions(
 		kdltext.WithVersion(v),
+		kdltext.DiscardComments(true),
 	)
 }
 
 // suiteFormat formats doc in the suite's canonical style.
 func suiteFormat(doc *kuddle.Document) *kuddle.Document {
+	doc.Nodes = withoutComments(doc.Nodes)
 	doc.Format(
 		kuddle.FormatSortProperties(true),
 		kuddle.FormatNumbers(kuddle.NumberDecimal),
@@ -100,6 +102,19 @@ func suiteFormat(doc *kuddle.Document) *kuddle.Document {
 		kuddle.FormatNormalizeStrings(true),
 	)
 	return doc
+}
+
+// withoutComments returns nodes without their comment nodes, at any depth,
+// since the suite's output has no comments.
+func withoutComments(nodes []kuddle.Node) []kuddle.Node {
+	kept := nodes[:0]
+	for _, n := range nodes {
+		if n.Kind != kuddle.NodeComment {
+			n.Children = withoutComments(n.Children)
+			kept = append(kept, n)
+		}
+	}
+	return kept
 }
 
 // uniqueProps returns a copy of doc in which each node has only the last of

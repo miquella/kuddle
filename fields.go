@@ -19,7 +19,7 @@ const (
 	fieldArgs                      // the remaining arguments
 	fieldProp                      // the property with the field's name
 	fieldProps                     // the remaining properties
-	fieldEntries                   // the remaining arguments and properties
+	fieldEntries                   // the remaining arguments, properties and comments
 	fieldChildren                  // the remaining child nodes
 	fieldName                      // the node's name
 	fieldType                      // the node's type annotation
@@ -264,10 +264,12 @@ func checkValue(t reflect.Type) error {
 // package's types that can't hold a node, or is a slice, array or map with
 // such elements in place of nodes.
 func checkNode(t reflect.Type) error {
-	for n := 0; n < maxIndirections; n++ {
+	for range maxIndirections {
 		switch {
 		case t == entryType:
-			return errors.New("an Entry is an argument or property, not a node, and belongs in an entries field")
+			return errors.New("an Entry is an argument, property or comment, not a node, and belongs in an entries field")
+		case t == commentType:
+			return errors.New("a kdltext.Comment is a comment, not a node")
 		case t.Kind() == reflect.Pointer:
 			t = t.Elem()
 		case isValueType(t) || hasMethods(t):

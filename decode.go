@@ -96,6 +96,8 @@ type nodeStart struct {
 	name string
 	pos  kdltext.Position
 
+	comment kdltext.Comment // the comment directly above the node
+
 	root, inNode bool
 }
 
@@ -103,7 +105,7 @@ type nodeStart struct {
 // the path. The caller must call leave once the child is decoded.
 func (d *decoder) child() *nodeStart {
 	t, _ := d.in.ReadToken()
-	c := &nodeStart{typ: t.Value.Type, name: t.Name(), pos: d.in.Pos()}
+	c := &nodeStart{typ: t.Value.Type, name: t.Name(), pos: d.in.Pos(), comment: t.Comment}
 	d.path = append(d.path, pathSegment{c.name, -1})
 	return c
 }
@@ -114,24 +116,35 @@ func (d *decoder) leave() { d.path = d.path[:len(d.path)-1] }
 // a slice or array.
 func (d *decoder) element(i int) { d.path[len(d.path)-1].index = i }
 
+// peek returns the kind of the next token, reading and discarding the
+// comment tokens before it, which only the values holding whole nodes keep.
+func (d *decoder) peek() kdltext.Kind {
+	k := d.in.PeekKind()
+	for k == kdltext.KindComment || k == kdltext.KindEntryComment {
+		d.in.ReadToken()
+		k = d.in.PeekKind()
+	}
+	return k
+}
+
 // nextChild reports whether another child of the node is next.
 func (d *decoder) nextChild() bool {
-	return d.in.PeekKind() == kdltext.KindNode
+	return d.peek() == kdltext.KindNode
 }
 
 // atEnd reports whether the contents of ns have all been read.
 func (d *decoder) atEnd(ns *nodeStart) bool {
 	if ns.root && !ns.inNode {
-		return d.in.PeekKind() == kdltext.KindInvalid
+		return d.peek() == kdltext.KindInvalid
 	}
-	return d.in.PeekKind() == kdltext.KindEnd
+	return d.peek() == kdltext.KindEnd
 }
 
 // end reads the end of ns, once its contents have been read: its KindEnd
 // token, or the end of the document. The KindEnd token of a root, whose
 // contents UnmarshalDecode reads, is left to be read.
 func (d *decoder) end(ns *nodeStart) error {
-	switch d.in.PeekKind() {
+	switch d.peek() {
 	case kdltext.KindEnd:
 		if !ns.root {
 			d.in.ReadToken()
@@ -144,13 +157,13 @@ func (d *decoder) end(ns *nodeStart) error {
 		}
 		return nil
 	}
-	return d.error(ns, entryRef{}, nil, fmt.Errorf("unexpected %s", d.in.PeekKind()))
+	return d.error(ns, entryRef{}, nil, fmt.Errorf("unexpected %s", d.peek()))
 }
 
 // fullNode reads the rest of the node ns, as a Node.
 func (d *decoder) fullNode(ns *nodeStart) (Node, error) {
 	var b builder
-	b.token(kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(ns.name).WithType(ns.typ)})
+	b.token(kdltext.Token{Kind: kdltext.KindNode, Value: kdltext.String(ns.name).WithType(ns.typ), Comment: ns.comment})
 	if err := b.read(d.in); err != nil {
 		return Node{}, err
 	}
@@ -163,7 +176,7 @@ func (d *decoder) fullNode(ns *nodeStart) (Node, error) {
 // skip reads and discards the rest of the node ns.
 func (d *decoder) skip(ns *nodeStart) error {
 	for depth := 0; ; {
-		switch d.in.PeekKind() {
+		switch d.peek() {
 		case kdltext.KindNode:
 			depth++
 		case kdltext.KindEnd:
@@ -338,7 +351,7 @@ func (d *decoder) readSince(m mark) int64 {
 // valueNode decodes the node ns, which must have a single argument, into v,
 // of a value type or a pointer to one, by the default rules.
 func (d *decoder) valueNode(ns *nodeStart, v reflect.Value) error {
-	if d.in.PeekKind() == kdltext.KindValue {
+	if d.peek() == kdltext.KindValue {
 		t, _ := d.in.ReadToken()
 		if d.atEnd(ns) {
 			if err := d.wrap(ns, argRef(1), v.Type(), setValue(v, t.Value)); err != nil {
@@ -357,7 +370,7 @@ func (d *decoder) valueNode(ns *nodeStart, v reflect.Value) error {
 func (d *decoder) notSingle(ns *nodeStart, t reflect.Type, args int) error {
 	props, children := 0, false
 	for !children && !d.atEnd(ns) {
-		switch d.in.PeekKind() {
+		switch d.peek() {
 		case kdltext.KindValue:
 			args++
 		case kdltext.KindProp:
@@ -424,7 +437,7 @@ func (d *decoder) structNode(ns *nodeStart, v reflect.Value) error {
 	}
 
 	// The entries field holds the arguments and properties that have no other
-	// field, in order.
+	// field, and the comment entries, in order.
 	var entries reflect.Value
 	if fs.entries != nil {
 		entries = slice(fs.entries)
@@ -433,7 +446,11 @@ func (d *decoder) structNode(ns *nodeStart, v reflect.Value) error {
 	args := 0
 	for {
 		var err error
+		// Peeked directly, as d.peek would pass over the comment entries.
 		switch d.in.PeekKind() {
+		case kdltext.KindEntryComment:
+			t, _ := d.in.ReadToken()
+			appendEntry(entries, Entry{Kind: EntryComment, Comment: t.Comment})
 		case kdltext.KindValue:
 			args++
 			entry := argRef(args)
@@ -464,7 +481,7 @@ func (d *decoder) structNode(ns *nodeStart, v reflect.Value) error {
 				err = d.unknownValue(ns, entry, v.Type())
 			}
 		default:
-			return d.structChildren(ns, v, fs, slice, &nodes)
+			return d.structChildren(ns, v, fs, slice, &nodes, entries)
 		}
 		if err != nil {
 			return err
@@ -479,8 +496,21 @@ func appendEntry(entries reflect.Value, e Entry) {
 	}
 }
 
-func (d *decoder) structChildren(ns *nodeStart, v reflect.Value, fs *structFields, slice func(*field) reflect.Value, nodes *mapSetter) error {
-	for d.nextChild() {
+// structChildren decodes the children of ns into the struct v, and the
+// comment entries after them into entries, if valid.
+func (d *decoder) structChildren(ns *nodeStart, v reflect.Value, fs *structFields, slice func(*field) reflect.Value, nodes *mapSetter, entries reflect.Value) error {
+	for {
+		// Peeked directly, as d.peek would pass over the comment entries.
+		if k := d.in.PeekKind(); k == kdltext.KindComment || k == kdltext.KindEntryComment {
+			t, _ := d.in.ReadToken()
+			if k == kdltext.KindEntryComment {
+				appendEntry(entries, Entry{Kind: EntryComment, Comment: t.Comment})
+			}
+			continue
+		}
+		if !d.nextChild() {
+			break
+		}
 		c := d.child()
 		var err error
 		switch f := fs.children[c.name]; {
@@ -517,7 +547,7 @@ func (d *decoder) mapNode(ns *nodeStart, v reflect.Value) error {
 	args := 0
 	for {
 		var err error
-		switch d.in.PeekKind() {
+		switch d.peek() {
 		case kdltext.KindValue:
 			args++
 			err = d.noPlace(ns, argRef(args), v.Type(), "arguments")
@@ -625,7 +655,7 @@ func (d *decoder) listNode(ns *nodeStart, v reflect.Value) error {
 	}
 
 	args := 0
-	for k := d.in.PeekKind(); k == kdltext.KindValue || k == kdltext.KindProp; k = d.in.PeekKind() {
+	for k := d.peek(); k == kdltext.KindValue || k == kdltext.KindProp; k = d.peek() {
 		if k == kdltext.KindProp {
 			t, _ := d.in.ReadToken()
 			return d.noPlace(ns, propRef(t.Name()), v.Type(), "properties")
@@ -675,7 +705,7 @@ func (d *decoder) appendNode(c *nodeStart, v reflect.Value) error {
 	args := 0
 	for {
 		var err error
-		switch d.in.PeekKind() {
+		switch d.peek() {
 		case kdltext.KindValue:
 			args++
 			elem := grow(v)
@@ -957,12 +987,26 @@ func (d *decoder) error(ns *nodeStart, entry entryRef, t reflect.Type, err error
 	return &SemanticError{action: "unmarshal", Path: formatPath(d.path), Pos: ns.pos, Entry: entry.String(), GoType: t, Err: err}
 }
 
-// singleArg returns n's argument if it is all the node has.
+// singleArg returns n's argument if it is all the node has, but for
+// comments.
 func singleArg(n *Node) (kdltext.Value, bool) {
-	if len(n.Entries) != 1 || n.Entries[0].IsProp() || len(n.Children) > 0 {
-		return kdltext.Value{}, false
+	var arg kdltext.Value
+	args := 0
+	for _, e := range n.Entries {
+		switch {
+		case e.IsProp():
+			return kdltext.Value{}, false
+		case e.IsArg():
+			arg = e.Value
+			args++
+		}
 	}
-	return n.Entries[0].Value, true
+	for _, c := range n.Children {
+		if !c.IsComment() {
+			return kdltext.Value{}, false
+		}
+	}
+	return arg, args == 1
 }
 
 // entryRef identifies an entry of a node in errors. It is formatted only if

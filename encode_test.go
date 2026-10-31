@@ -51,6 +51,13 @@ func TestMarshalEmptyDocument(t *testing.T) {
 			t.Errorf("%#v: got %q, %v; want a newline", doc, got, err)
 		}
 	}
+
+	// A document of comments is empty without them.
+	doc := kuddle.Document{Nodes: []kuddle.Node{{Kind: kuddle.NodeComment, Comment: kdltext.Comment{Kind: kdltext.CommentLine, Text: "c"}}}}
+	got, err := kuddle.Marshal(doc, kdltext.DiscardComments(true))
+	if err != nil || string(got) != "\n" {
+		t.Errorf("comments omitted: got %q, %v; want a newline", got, err)
+	}
 }
 
 func TestMarshalEncodeChildren(t *testing.T) {
