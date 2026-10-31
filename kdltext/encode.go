@@ -32,6 +32,11 @@ type Encoder struct {
 	newline  string // WithNewline
 	quoteIDs bool   // QuoteIdentifiers
 
+	// props holds the names of the properties of the current node, if a node
+	// may not repeat a property (see RejectDuplicateProperties); it is nil
+	// otherwise.
+	props map[string]struct{}
+
 	open []openNode
 	doc  level // the tokens written at the top level
 	err  error // sticky error
@@ -50,7 +55,8 @@ type openNode struct {
 var errTooDeep = fmt.Errorf("children blocks nested deeper than %d", maxNestingDepth)
 
 // NewEncoder returns an Encoder writing to w. The options that apply are
-// WithVersion, WithIndent, WithNewline and QuoteIdentifiers.
+// WithVersion, WithIndent, WithNewline, QuoteIdentifiers and
+// RejectDuplicateProperties.
 func NewEncoder(w io.Writer, opts ...Options) *Encoder {
 	o := kdlopts.Join(opts...)
 	e := &Encoder{
@@ -69,6 +75,9 @@ func NewEncoder(w io.Writer, opts ...Options) *Encoder {
 	}
 	if o.Present&kdlopts.Newline != 0 {
 		e.newline = o.Newline
+	}
+	if o.Flags&kdlopts.RejectDuplicateProperties != 0 {
+		e.props = make(map[string]struct{})
 	}
 	return e
 }
@@ -149,6 +158,7 @@ func (e *Encoder) write(t Token) error {
 			return err
 		}
 		e.open = append(e.open, openNode{})
+		clear(e.props)
 
 	case KindValue, KindProp:
 		n := len(e.open)
@@ -165,6 +175,13 @@ func (e *Encoder) write(t Token) error {
 			}
 			if t.Value.Type != nil {
 				return errors.New("a property's name can't have a type annotation")
+			}
+			name := t.Name()
+			if e.props != nil {
+				if _, ok := e.props[name]; ok {
+					return fmt.Errorf("node has more than one property %s", lexer.Quote(name))
+				}
+				e.props[name] = struct{}{}
 			}
 			o.prop, o.inProp = t.Value, true
 			return nil

@@ -101,6 +101,16 @@ func RejectMultipleChildrenBlocks(v bool) Options {
 	return kdlopts.Bool(kdlopts.RejectMultipleChildrenBlocks, v)
 }
 
+// RejectDuplicateProperties sets whether a node may have only one property
+// of each name. If so, a Decoder reports a later property of the same name
+// as a syntax error, and an Encoder reports an error for writing one. By
+// default, repeated properties are allowed, as KDL allows them: the
+// rightmost takes precedence. Slash-dashed properties are not counted. It
+// applies to both the Decoder and the Encoder, and to both KDL versions.
+func RejectDuplicateProperties(v bool) Options {
+	return kdlopts.Bool(kdlopts.RejectDuplicateProperties, v)
+}
+
 // WithMaxTokenSize sets the maximum number of bytes of input that a Decoder
 // holds to read a single token, such as a string or comment, which is
 // unlimited by default or if n is zero. Reading a larger token is an error

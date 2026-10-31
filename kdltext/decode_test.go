@@ -284,6 +284,43 @@ func TestRejectMultipleChildrenBlocks(t *testing.T) {
 	}
 }
 
+func TestDecoderRejectDuplicateProperties(t *testing.T) {
+	reject := kdltext.RejectDuplicateProperties(true)
+	tests := []struct {
+		input string
+		opts  []kdltext.Options
+		want  string // the error, or "" if the input must be read
+	}{
+		{`n a=1 b=2 a=3`, nil, ""},
+		{`n a=1 b=2 a=3`, []kdltext.Options{reject}, `line 1, column 11: node "n" has more than one property "a"`},
+		{`n a=1 "a"=2`, []kdltext.Options{reject}, `line 1, column 7: node "n" has more than one property "a"`},
+		{`n a=1 a=2`, []kdltext.Options{kdltext.WithVersion(kdltext.V1), reject}, `line 1, column 7: node "n" has more than one property "a"`},
+		{"n {\n  m a=1 a=2\n}", []kdltext.Options{reject}, `line 2, column 9: node "m" has more than one property "a"`},
+		// Slash-dashed properties and those of other nodes are not counted.
+		{`n a=1 /-a=2`, []kdltext.Options{reject}, ""},
+		{`n /-a=1 a=2`, []kdltext.Options{reject}, ""},
+		{`n a=1 /-{ m a=1 a=2 }`, []kdltext.Options{reject}, ""},
+		{`n a=1 { m a=1 }; o a=1`, []kdltext.Options{reject}, ""},
+		{`/-n a=1 a=2`, []kdltext.Options{reject}, ""},
+	}
+	for _, tt := range tests {
+		_, err := readAll(tt.input, tt.opts...)
+		if tt.want == "" {
+			if err != nil {
+				t.Errorf("%q: %v", tt.input, err)
+			}
+			continue
+		}
+		if _, ok := errors.AsType[*kdltext.SyntacticError](err); !ok {
+			t.Errorf("%q: err = %v, want SyntacticError", tt.input, err)
+			continue
+		}
+		if got := strings.TrimPrefix(err.Error(), "kdltext: syntax error at "); got != tt.want {
+			t.Errorf("%q:\ngot  %s\nwant %s", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestDecoderState(t *testing.T) {
 	d := kdltext.NewDecoder(strings.NewReader("a {\n  b 1\n}"))
 	var got []string

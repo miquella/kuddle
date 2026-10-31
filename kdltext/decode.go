@@ -22,6 +22,11 @@ type Decoder struct {
 	// v1, slash-dashed or not (see RejectMultipleChildrenBlocks).
 	strictChildren bool
 
+	// props holds the names of the properties of the node whose entries are
+	// being parsed, if a node may not repeat a property (see
+	// RejectDuplicateProperties); it is nil otherwise.
+	props map[string]struct{}
+
 	look    lexToken // the next lexer token, if hasLook
 	hasLook bool
 	queue   []queued // parsed tokens; those before head have been returned
@@ -71,8 +76,9 @@ type level struct {
 	last Kind
 }
 
-// NewDecoder returns a Decoder reading from r. The options that apply are
-// WithVersion, WithMaxTokenSize and RejectMultipleChildrenBlocks.
+// NewDecoder returns a Decoder reading from r. It accepts the options
+// WithVersion, WithMaxTokenSize, RejectMultipleChildrenBlocks and
+// RejectDuplicateProperties.
 //
 // If r is a *bytes.Buffer, the Decoder reads directly from its contents,
 // without copying them, and the buffer must not be written to while the
@@ -81,11 +87,15 @@ func NewDecoder(r io.Reader, opts ...Options) *Decoder {
 	o := kdlopts.Join(opts...)
 	l := lexer.New(r, lexer.Version(o.Version))
 	l.SetMaxTokenSize(o.MaxTokenSize)
-	return &Decoder{
+	d := &Decoder{
 		lex:            l,
 		opts:           o,
 		strictChildren: o.Flags&kdlopts.RejectMultipleChildrenBlocks != 0,
 	}
+	if o.Flags&kdlopts.RejectDuplicateProperties != 0 {
+		d.props = make(map[string]struct{})
+	}
+	return d
 }
 
 // ReadToken returns the next token, or io.EOF at the end of the document.
@@ -304,6 +314,7 @@ func (d *Decoder) startNode(emit bool) error {
 	d.advance()
 	name := valueOf(typ, t, d.lex.Version())
 	if emit {
+		clear(d.props)
 		d.push(Token{Kind: KindNode, Value: name}, start.pos, t.end)
 	}
 	d.frames = append(d.frames, frame{name: name, emit: emit})
@@ -493,6 +504,13 @@ func (d *Decoder) parseEntry(emit bool) (space bool, err error) {
 		return false, err
 	}
 	if emit {
+		if d.props != nil {
+			name := t.String()
+			if _, ok := d.props[name]; ok {
+				return false, d.errorf(start, "node %s has more than one property %s", lexer.Quote(d.frames[len(d.frames)-1].name.String()), lexer.Quote(name))
+			}
+			d.props[name] = struct{}{}
+		}
 		d.push(Token{Kind: KindProp, Value: valueOf(nil, t, d.lex.Version())}, start.pos, t.end)
 		d.push(Token{Kind: KindValue, Value: v}, vstart.pos, d.read)
 	}

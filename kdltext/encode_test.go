@@ -142,6 +142,48 @@ func TestEncoderStackIndex(t *testing.T) {
 	}
 }
 
+func TestEncoderRejectDuplicateProperties(t *testing.T) {
+	reject := kdltext.RejectDuplicateProperties(true)
+	tests := []struct {
+		toks []kdltext.Token
+		opts []kdltext.Options
+		want string // the output, or the error if wantErr
+		err  bool
+	}{
+		{
+			[]kdltext.Token{node("n"), prop("a"), val(kdltext.Int(1)), prop("a"), val(kdltext.Int(2)), end},
+			nil, "n a=1 a=2\n", false,
+		},
+		{
+			[]kdltext.Token{node("n"), prop("a"), val(kdltext.Int(1)), prop("a"), val(kdltext.Int(2)), end},
+			[]kdltext.Options{reject}, `kdltext: node has more than one property "a"`, true,
+		},
+		// The properties of other nodes are not counted.
+		{
+			[]kdltext.Token{
+				node("n"), prop("a"), val(kdltext.Int(1)),
+				node("m"), prop("a"), val(kdltext.Int(2)), end,
+				end,
+				node("o"), prop("a"), val(kdltext.Int(3)), end,
+			},
+			[]kdltext.Options{reject}, "n a=1 {\n    m a=2\n}\no a=3\n", false,
+		},
+	}
+	for _, tt := range tests {
+		got, err := encode(tt.toks, tt.opts...)
+		switch {
+		case tt.err && err == nil:
+			t.Errorf("got %q, want error %q", got, tt.want)
+		case tt.err && err.Error() != tt.want:
+			t.Errorf("error %q, want %q", err, tt.want)
+		case !tt.err && err != nil:
+			t.Errorf("unexpected error: %v", err)
+		case !tt.err && got != tt.want:
+			t.Errorf("got %q, want %q", got, tt.want)
+		}
+	}
+}
+
 func TestEncoderQuoteIdentifiers(t *testing.T) {
 	typed := kdltext.String("c")
 	typed.Type = new("t")
