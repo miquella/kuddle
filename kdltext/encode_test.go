@@ -142,6 +142,31 @@ func TestEncoderStackIndex(t *testing.T) {
 	}
 }
 
+func TestEncoderQuoteIdentifiers(t *testing.T) {
+	typed := kdltext.String("c")
+	typed.Type = new("t")
+	n := node("n")
+	n.Value.Type = new("u")
+	toks := []kdltext.Token{n, val(kdltext.String("a")), prop("p"), val(typed), end}
+	tests := []struct {
+		opts []kdltext.Options
+		want string
+	}{
+		{nil, `(u)n a p=(t)c`},
+		{[]kdltext.Options{kdltext.QuoteIdentifiers(true)}, `("u")"n" a "p"=("t")c`},
+		{[]kdltext.Options{kdltext.WithVersion(kdltext.V1), kdltext.QuoteIdentifiers(true)}, `("u")"n" "a" "p"=("t")"c"`},
+	}
+	for _, tt := range tests {
+		got, err := encode(toks, tt.opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tt.want+"\n" {
+			t.Errorf("got %q, want %q", got, tt.want)
+		}
+	}
+}
+
 func TestEncoderIdentifiers(t *testing.T) {
 	tests := []struct {
 		name   string

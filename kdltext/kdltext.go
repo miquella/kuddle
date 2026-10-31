@@ -84,6 +84,14 @@ func WithIndent(indent string) Options {
 	return &kdlopts.Struct{Present: kdlopts.Indent, Indent: indent}
 }
 
+// QuoteIdentifiers sets whether an Encoder writes every node name, property
+// name and type annotation as a quoted string, even where it could be written
+// as a bare identifier. String values are not affected. It
+// applies to both KDL versions.
+func QuoteIdentifiers(v bool) Options {
+	return kdlopts.Bool(kdlopts.QuoteIdentifiers, v)
+}
+
 // WithMaxTokenSize sets the maximum number of bytes of input that a Decoder
 // holds to read a single token, such as a string or comment, which is
 // unlimited by default or if n is zero. Reading a larger token is an error

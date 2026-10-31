@@ -25,10 +25,11 @@ const (
 	Indent
 	Newline
 	DiscardUnknown
+	QuoteIdentifiers
 	MaxTokenSize
 
 	// boolOptions are the options whose value is held in Struct.Flags.
-	boolOptions = DiscardUnknown
+	boolOptions = DiscardUnknown | QuoteIdentifiers
 )
 
 // Struct holds a set of options. Each option function returns a Struct with

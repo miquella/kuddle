@@ -16,20 +16,21 @@ import (
 // braces, or as {} if it has an empty children block (see Token.Children).
 // Strings, names and numbers read by a Decoder are written as they were
 // read, if the version being written allows that form. Others are written as
-// bare identifiers where the version allows, and as quoted strings
-// otherwise; one that is not valid UTF-8 is an error. To change the style of
-// a document, see the Format method of kuddle.Document.
+// bare identifiers where the version allows, and as quoted strings otherwise
+// (see QuoteIdentifiers); one that is not valid UTF-8 is an error. To change
+// the style of a document, see the Format method of kuddle.Document.
 //
 // Output is buffered until each top-level node ends. Nodes may be nested in
 // up to 10000 children blocks; a node nested deeper is an error.
 type Encoder struct {
-	w       io.Writer
-	opts    *kdlopts.Struct // the options of NewEncoder (see Options)
-	buf     []byte
-	flushed int64 // the number of bytes written to w
-	version Version
-	indent  string
-	newline string // WithNewline
+	w        io.Writer
+	opts     *kdlopts.Struct // the options of NewEncoder (see Options)
+	buf      []byte
+	flushed  int64 // the number of bytes written to w
+	version  Version
+	indent   string
+	newline  string // WithNewline
+	quoteIDs bool   // QuoteIdentifiers
 
 	open []openNode
 	doc  level // the tokens written at the top level
@@ -49,15 +50,16 @@ type openNode struct {
 var errTooDeep = fmt.Errorf("children blocks nested deeper than %d", maxNestingDepth)
 
 // NewEncoder returns an Encoder writing to w. The options that apply are
-// WithVersion, WithIndent and WithNewline.
+// WithVersion, WithIndent, WithNewline and QuoteIdentifiers.
 func NewEncoder(w io.Writer, opts ...Options) *Encoder {
 	o := kdlopts.Join(opts...)
 	e := &Encoder{
-		w:       w,
-		opts:    o,
-		version: V2,
-		indent:  "    ",
-		newline: "\n",
+		w:        w,
+		opts:     o,
+		version:  V2,
+		indent:   "    ",
+		newline:  "\n",
+		quoteIDs: o.Flags&kdlopts.QuoteIdentifiers != 0,
 	}
 	if o.Present&kdlopts.Version != 0 {
 		e.version = Version(o.Version)
@@ -143,7 +145,7 @@ func (e *Encoder) write(t Token) error {
 				return err
 			}
 		}
-		if err := e.writeStringValue(t.Value, true); err != nil {
+		if err := e.writeStringValue(t.Value, !e.quoteIDs); err != nil {
 			return err
 		}
 		e.open = append(e.open, openNode{})
@@ -208,7 +210,7 @@ func (e *Encoder) write(t Token) error {
 func (e *Encoder) writeEntry(t Token, name Value) error {
 	e.buf = append(e.buf, ' ')
 	if t.Kind == KindProp {
-		if err := e.writeStringValue(name, true); err != nil {
+		if err := e.writeStringValue(name, !e.quoteIDs); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, '=')
@@ -231,7 +233,7 @@ func (e *Encoder) writeIndent(depth int) {
 
 func (e *Encoder) writeType(typ string) error {
 	e.buf = append(e.buf, '(')
-	if err := e.writeString(typ, true); err != nil {
+	if err := e.writeString(typ, !e.quoteIDs); err != nil {
 		return err
 	}
 	e.buf = append(e.buf, ')')
