@@ -206,14 +206,17 @@ func (n Node) Prop(name string) (kdltext.Value, bool) {
 	return kdltext.Value{}, false
 }
 
-// UnmarshalKDL reads the rest of the document from dec into d, replacing its
-// nodes, with its comment nodes. If dec is within a node, it reads the rest
-// of the node's children instead, leaving the node's KindEnd token to be
-// read; the node's arguments and properties are an error, and the comment
-// entries after its children are discarded.
-func (d *Document) UnmarshalKDL(dec *kdltext.Decoder) error {
+// UnmarshalKDL reads the rest of the document from dec into d, comment nodes
+// included, replacing d's nodes. If dec is within a node, it reads the rest
+// of the node's children instead, and leaves the node's KindEnd token unread.
+// In that case, the node's arguments and properties are an error, and any
+// comment entries after its children are discarded.
+func (d *Document) UnmarshalKDL(dec *kdltext.Decoder) error { return d.read(dec) }
+
+// read is UnmarshalKDL, reading from in.
+func (d *Document) read(in tokenReader) error {
 	var b builder
-	if err := b.read(dec); err != nil {
+	if err := b.read(in); err != nil {
 		return err
 	}
 	d.Nodes = clone(b.nodes)
@@ -224,7 +227,7 @@ func (d *Document) UnmarshalKDL(dec *kdltext.Decoder) error {
 // enc is within a node, the node's children.
 func (d *Document) MarshalKDL(enc *kdltext.Encoder) error { return writeNodes(enc, d.Nodes) }
 
-func writeNodes(enc *kdltext.Encoder, nodes []Node) error {
+func writeNodes(enc tokenWriter, nodes []Node) error {
 	for i := range nodes {
 		if err := writeNode(enc, &nodes[i]); err != nil {
 			return err
@@ -233,7 +236,7 @@ func writeNodes(enc *kdltext.Encoder, nodes []Node) error {
 	return nil
 }
 
-func writeNode(enc *kdltext.Encoder, n *Node) error {
+func writeNode(enc tokenWriter, n *Node) error {
 	if n.IsComment() {
 		return enc.WriteToken(kdltext.Token{Kind: kdltext.KindComment, Comment: n.Comment})
 	}
@@ -253,7 +256,7 @@ func writeNode(enc *kdltext.Encoder, n *Node) error {
 
 // writeEntry writes the tokens of e: a property's name and value, an
 // argument's value, or a comment.
-func writeEntry(enc *kdltext.Encoder, e Entry) error {
+func writeEntry(enc tokenWriter, e Entry) error {
 	switch {
 	case e.IsProp():
 		if err := enc.WriteToken(kdltext.Token{Kind: kdltext.KindProp, Value: kdltext.String(e.Name)}); err != nil {
@@ -265,7 +268,7 @@ func writeEntry(enc *kdltext.Encoder, e Entry) error {
 	return enc.WriteToken(kdltext.Token{Kind: kdltext.KindValue, Value: e.Value})
 }
 
-// builder builds nodes from the tokens of a Decoder. The entries and
+// builder builds nodes from a stream of tokens. The entries and
 // children of the nodes being built are kept on stacks, so that each node's
 // slices are allocated once, at their final size.
 type builder struct {
@@ -287,7 +290,7 @@ type openBuild struct {
 // dec is within when read is called, which is left to be read, or up to the
 // end of the document. Arguments and properties outside of the nodes being
 // built are an error, and comment entries there are discarded.
-func (b *builder) read(dec *kdltext.Decoder) error {
+func (b *builder) read(dec tokenReader) error {
 	depth := len(b.open)
 	for {
 		switch dec.PeekKind() {

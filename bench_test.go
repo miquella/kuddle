@@ -114,3 +114,60 @@ func BenchmarkMarshal(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkDocument converts between a struct and a Document directly, with
+// From and To, and through KDL text, with Marshal and Unmarshal.
+func BenchmarkDocument(b *testing.B) {
+	var doc kuddle.Document
+	var cfg benchConfig
+	if err := kuddle.Unmarshal(benchData, &doc); err != nil {
+		b.Fatal(err)
+	}
+	if err := kuddle.Unmarshal(benchData, &cfg); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("From", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var d kuddle.Document
+			if err := d.From(&cfg); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("FromViaText", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var d kuddle.Document
+			text, err := kuddle.Marshal(&cfg)
+			if err == nil {
+				err = kuddle.Unmarshal(text, &d)
+			}
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("To", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var c benchConfig
+			if err := doc.To(&c); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("ToViaText", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var c benchConfig
+			text, err := kuddle.Marshal(&doc)
+			if err == nil {
+				err = kuddle.Unmarshal(text, &c)
+			}
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}

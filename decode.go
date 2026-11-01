@@ -55,7 +55,7 @@ func UnmarshalDecode(in *kdltext.Decoder, out any, opts ...Options) error {
 
 // unmarshal decodes the rest of the document, or of the current node, from
 // in into out, with the options of in and opts.
-func unmarshal(in *kdltext.Decoder, out any, opts ...Options) error {
+func unmarshal(in tokenReader, out any, opts ...Options) error {
 	o := kdlopts.Join(in.Options())
 	o.Join(opts...)
 	rv := reflect.ValueOf(out)
@@ -68,7 +68,7 @@ func unmarshal(in *kdltext.Decoder, out any, opts ...Options) error {
 	if !root.inNode {
 		if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
 			doc := new(Document)
-			if err := doc.UnmarshalKDL(in); err != nil {
+			if err := doc.read(in); err != nil {
 				return err
 			}
 			v.Set(reflect.ValueOf(doc))
@@ -82,7 +82,7 @@ func unmarshal(in *kdltext.Decoder, out any, opts ...Options) error {
 }
 
 type decoder struct {
-	in     *kdltext.Decoder
+	in     tokenReader
 	ignore bool          // whether what a struct has no field for is ignored
 	path   []pathSegment // the nodes being decoded
 
@@ -343,8 +343,11 @@ func asUnmarshaler(v reflect.Value) (Unmarshaler, bool) {
 // node ns, and reads the end of the node. It reports false if the method
 // returned errors.ErrUnsupported without reading anything.
 func (d *decoder) nodeMethod(ns *nodeStart, t reflect.Type, u Unmarshaler) (bool, error) {
+	if r, ok := d.in.(*treeReader); ok && !isDocument(u) {
+		return d.textNodeMethod(r, ns, t, u)
+	}
 	m := d.mark()
-	err := u.UnmarshalKDL(d.in)
+	err := d.call(u)
 	read := d.readSince(m)
 	switch {
 	case err == errors.ErrUnsupported && read == 0:
@@ -973,8 +976,11 @@ func setValue(v reflect.Value, val kdltext.Value) error {
 // value token, for the method to read. It reports false if the method
 // returned errors.ErrUnsupported without reading anything.
 func (d *decoder) valueMethod(u Unmarshaler) (bool, error) {
+	if r, ok := d.in.(*treeReader); ok && !isDocument(u) {
+		return d.textValueMethod(r, u)
+	}
 	m := d.mark()
-	err := u.UnmarshalKDL(d.in)
+	err := d.call(u)
 	read := d.readSince(m)
 	switch {
 	case err == errors.ErrUnsupported && read == 0:

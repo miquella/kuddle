@@ -57,7 +57,7 @@ type randomRoot struct {
 
 // TestCommentFieldsRandom decodes documents full of comments, writes what was
 // decoded, and decodes that again: the comments must come out as they went
-// in.
+// in. A Document must give the same as the text.
 func TestCommentFieldsRandom(t *testing.T) {
 	rng := rand.New(rand.NewPCG(11, 12))
 	for i := range 3000 {
@@ -79,6 +79,18 @@ func TestCommentFieldsRandom(t *testing.T) {
 		}
 		if !reflect.DeepEqual(first, second) {
 			t.Fatalf("#%d: %q\nread as    %+v\nwritten as %q\nread again %+v", i, text, first, out, second)
+		}
+
+		var doc kuddle.Document
+		if err := kuddle.Unmarshal([]byte(text), &doc); err != nil {
+			t.Fatal(err)
+		}
+		var fromDoc randomRoot
+		if err := doc.To(&fromDoc); err != nil {
+			t.Fatalf("%q: To: %v", text, err)
+		}
+		if !reflect.DeepEqual(first, fromDoc) {
+			t.Fatalf("#%d: %q\nfrom text     %+v\nfrom Document %+v", i, text, first, fromDoc)
 		}
 	}
 }

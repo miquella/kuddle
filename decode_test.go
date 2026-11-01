@@ -867,6 +867,18 @@ func TestUnmarshalDecodeOptions(t *testing.T) {
 	if !errors.Is(err, kuddle.ErrUnknown) {
 		t.Errorf("Unmarshal: err = %v, want ErrUnknown", err)
 	}
+
+	var doc kuddle.Document
+	if err := kuddle.Unmarshal(in, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.To(&v, kuddle.DiscardUnknown(true)); err != nil {
+		t.Errorf("To with DiscardUnknown: %v", err)
+	}
+	err = doc.To(&v)
+	if !errors.Is(err, kuddle.ErrUnknown) {
+		t.Errorf("To: err = %v, want ErrUnknown", err)
+	}
 }
 
 // TestUnmarshalSelfPointer checks that Unmarshal into a pointer type defined

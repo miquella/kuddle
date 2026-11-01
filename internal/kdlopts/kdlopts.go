@@ -31,6 +31,10 @@ const (
 	RejectDuplicateProperties
 	MaxTokenSize
 
+	// Semantic are the options of the kuddle package, which a kdltext
+	// Decoder or Encoder keeps, for its Options method, but does not apply.
+	Semantic = DiscardUnknown
+
 	// boolOptions are the options whose value is held in Struct.Flags.
 	boolOptions = DiscardUnknown | QuoteIdentifiers |
 		DiscardComments |
@@ -96,4 +100,12 @@ func Join(opts ...Options) *Struct {
 func (s *Struct) Clone() *Struct {
 	c := *s
 	return &c
+}
+
+// Only returns the options of s that are among b.
+func (s *Struct) Only(b Bits) *Struct {
+	m := *s
+	m.Present &= b
+	m.Flags &= b
+	return Join(&m)
 }

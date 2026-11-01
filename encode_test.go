@@ -636,16 +636,30 @@ func TestMarshalTakenNames(t *testing.T) {
 			`kuddle: cannot marshal node log[1]: child node "log" has the name of field Log`},
 	}
 	for _, tt := range tests {
-		b, err := kuddle.Marshal(tt.in)
-		got := string(b)
-		if err != nil {
-			got = err.Error()
-			if _, ok := errors.AsType[*kuddle.SemanticError](err); !ok {
-				t.Errorf("%+v: err = %#v, want a *SemanticError", tt.in, err)
+		for _, from := range []bool{false, true} {
+			var got string
+			var err error
+			if from {
+				var doc kuddle.Document
+				if err = doc.From(tt.in); err == nil {
+					var b []byte
+					b, err = kuddle.Marshal(&doc)
+					got = string(b)
+				}
+			} else {
+				var b []byte
+				b, err = kuddle.Marshal(tt.in)
+				got = string(b)
 			}
-		}
-		if got != tt.want {
-			t.Errorf("%+v:\ngot  %s\nwant %s", tt.in, got, tt.want)
+			if err != nil {
+				got = err.Error()
+				if _, ok := errors.AsType[*kuddle.SemanticError](err); !ok {
+					t.Errorf("%+v (From: %v): err = %#v, want a *SemanticError", tt.in, from, err)
+				}
+			}
+			if got != tt.want {
+				t.Errorf("%+v (From: %v):\ngot  %s\nwant %s", tt.in, from, got, tt.want)
+			}
 		}
 	}
 }
@@ -936,6 +950,10 @@ func TestMarshalSelfReference(t *testing.T) {
 		_, err := kuddle.Marshal(map[string]any{"n": tt.in})
 		if _, ok := errors.AsType[*kuddle.SemanticError](err); !ok || !strings.Contains(err.Error(), "encountered a cycle") {
 			t.Errorf("%s: err = %v", tt.name, err)
+		}
+		var doc kuddle.Document
+		if err := doc.From(map[string]any{"n": tt.in}); err == nil || !strings.Contains(err.Error(), "encountered a cycle") {
+			t.Errorf("%s: From: err = %v", tt.name, err)
 		}
 	}
 }

@@ -326,6 +326,13 @@
 // value passes over comments, but for the entries, comment and headercomment
 // fields of a struct.
 //
+// [Document.From] and [Document.To] convert between Go values and Documents
+// as Marshal and Unmarshal convert between Go values and KDL text, by the
+// same rules. They copy the data directly, without KDL text, but for the
+// values of types implementing Marshaler and Unmarshaler, whose methods write
+// and read their parts of the document as KDL text. The options that concern
+// KDL text do not apply to From and To.
+//
 // # Formatting
 //
 // [Document.Format] and [Node.Format] change how a document is written, between

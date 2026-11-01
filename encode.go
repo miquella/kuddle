@@ -57,7 +57,7 @@ func MarshalEncode(out *kdltext.Encoder, in any, opts ...Options) error {
 	return marshal(out, in)
 }
 
-func marshal(out *kdltext.Encoder, in any) error {
+func marshal(out tokenWriter, in any) error {
 	switch in := in.(type) {
 	case nil:
 		return errors.New("kuddle: cannot marshal nil")
@@ -79,7 +79,7 @@ func marshal(out *kdltext.Encoder, in any) error {
 }
 
 type encoder struct {
-	out    *kdltext.Encoder
+	out    tokenWriter
 	root   reflect.Type  // the type of the document's Go value
 	inNode bool          // whether the root is the contents of the node out is within
 	open   int           // the number of nodes started and not yet ended
@@ -334,27 +334,49 @@ func (e *encoder) marshaler(m Marshaler, v reflect.Value, name string, own, root
 	if err := e.startNode(v, name, own, root); err != nil {
 		return err
 	}
-	depth := e.out.StackDepth()
-	_, n := e.out.StackIndex(depth)
-	err := m.MarshalKDL(e.out)
-	switch {
-	case err == errors.ErrUnsupported && e.unchanged(depth, n):
+	done, err := e.nodeMethod(m, t)
+	if err != nil {
+		return err
+	}
+	if !done {
 		if err := e.contents(v, root); err != nil {
 			return err
 		}
-	case err == errors.ErrUnsupported:
-		return e.error(t, errors.New("MarshalKDL returned errors.ErrUnsupported after writing output"))
-	case err != nil:
-		if se, ok := errors.AsType[*SemanticError](err); ok {
-			return se.within(formatPath(e.path), kdltext.Position{})
-		}
-		return e.error(t, err)
-	case e.out.StackDepth() > depth:
-		return e.error(t, errors.New("MarshalKDL started a node it did not end"))
-	case e.out.StackDepth() < depth:
-		return e.error(t, errors.New("MarshalKDL ended the node it was writing"))
 	}
 	return e.end(root, false)
+}
+
+// nodeMethod calls the MarshalKDL method m of a value of type t, to write the
+// contents of its node. It reports false if the method returned
+// errors.ErrUnsupported without writing anything.
+func (e *encoder) nodeMethod(m Marshaler, t reflect.Type) (bool, error) {
+	if w, ok := e.out.(*treeWriter); ok && !isDocument(m) {
+		done, err := e.textMethod(w, func() (bool, error) { return e.nodeMethod(m, t) })
+		if err != nil {
+			return true, e.error(t, err)
+		}
+		return done, nil
+	}
+	depth := e.out.StackDepth()
+	_, n := e.out.StackIndex(depth)
+	err := e.call(m)
+	switch {
+	case err == errors.ErrUnsupported && e.unchanged(depth, n):
+		return false, nil
+	case err == errors.ErrUnsupported:
+		err = errors.New("MarshalKDL returned errors.ErrUnsupported after writing output")
+	case err != nil:
+		if se, ok := errors.AsType[*SemanticError](err); ok {
+			return true, se.within(formatPath(e.path), kdltext.Position{})
+		}
+	case e.out.StackDepth() > depth:
+		err = errors.New("MarshalKDL started a node it did not end")
+	case e.out.StackDepth() < depth:
+		err = errors.New("MarshalKDL ended the node it was writing")
+	default:
+		return true, nil
+	}
+	return true, e.error(t, err)
 }
 
 // unchanged reports whether nothing has been written since the stack of out
@@ -800,9 +822,12 @@ func rawValue(v reflect.Value) (kdltext.Value, error) {
 // reports false if the method returned errors.ErrUnsupported without
 // writing anything, for the value to be written by the default rules.
 func (e *encoder) valueMethod(m Marshaler) (bool, error) {
+	if w, ok := e.out.(*treeWriter); ok && !isDocument(m) {
+		return e.textMethod(w, func() (bool, error) { return e.valueMethod(m) })
+	}
 	depth := e.out.StackDepth()
 	_, n := e.out.StackIndex(depth)
-	err := m.MarshalKDL(e.out)
+	err := e.call(m)
 	switch {
 	case err == errors.ErrUnsupported && e.unchanged(depth, n):
 		return false, nil
