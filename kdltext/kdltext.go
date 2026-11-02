@@ -29,12 +29,33 @@
 //   - Any other comment, between nodes, is a KindComment token: a comment
 //     node.
 //
-// When writing, a blank line is written after a comment node where it would
-// otherwise be read as the comment of the node that follows, or be joined
-// with the line comment that follows.
+// When writing, the Encoder adds a blank line after a comment node where it
+// would otherwise be read as the next node's comment, or be joined with a
+// following line comment.
+//
+// # Options
+//
+// [NewDecoder] and [NewEncoder] take Options. Each option applies to the
+// Decoder, the Encoder, or both, and is ignored where it doesn't apply, so
+// one set of options can configure both. Later options take precedence over
+// earlier ones. A Decoder accepts:
+//
+//   - [WithVersion]: the version to read. By default, it's detected from the
+//     document.
+//   - [WithMaxTokenSize]: a limit on the input held to read one token.
+//   - [RejectDuplicateProperties]: an error for a repeated property.
+//   - [RejectMultipleChildrenBlocks]: a stricter grammar for KDL v1.
+//
+// An Encoder accepts:
+//
+//   - [WithVersion]: the version to write, v2 by default.
+//   - [WithIndent] and [WithNewline]: the indentation and line endings.
+//   - [QuoteIdentifiers]: quoted names even where bare identifiers would do.
+//   - [DiscardComments]: no comments.
+//   - [RejectDuplicateProperties]: an error for a repeated property.
 //
 // The kuddle package builds on this package to convert between KDL documents
-// and Go values.
+// and Go values, and to change the style of a document (see its Document.Format).
 package kdltext
 
 import (

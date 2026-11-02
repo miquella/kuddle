@@ -360,6 +360,17 @@
 // and read their parts of the document as KDL text. The options that concern
 // KDL text do not apply to From and To.
 //
+// # Options
+//
+// The functions of this package take [Options], from this package or from
+// kdltext. Marshal and Unmarshal pass them on to the kdltext.Encoder or
+// kdltext.Decoder they create, which take the options described in the
+// kdltext package documentation, such as [kdltext.WithVersion] and
+// [kdltext.WithIndent]. Unmarshal also takes [DiscardUnknown], which ignores
+// the arguments, properties and child nodes that a struct has no field for,
+// rather than reporting an error. [JoinOptions] combines several options into
+// one. Later options take precedence over earlier ones.
+//
 // # Formatting
 //
 // [Document.Format] and [Node.Format] change how a document is written, between
