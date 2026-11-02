@@ -141,22 +141,33 @@
 //     comment. If the struct also has an entries field, the line comment is
 //     left out of the entries. The document has no line comment.
 //
-// The arg, args, prop and props fields hold values of value types, or of types
-// with methods (see Custom marshaling), other than Document, which holds only
-// nodes. A child or children field can't hold an Entry or a kdltext.Comment,
-// even as the elements of a slice or map: they are entries and comments
-// rather than nodes, and are held by the entries, comment, linecomment and
-// headercomment fields. The keys of the maps of props and children fields are
-// as for a map. The omitzero option has Marshal leave the field out if it is
-// zero, as reported by its IsZero method if it has one.
+// The arg, args, prop and props fields hold values of value types, or of
+// types with methods (see Custom marshaling), other than Document, which
+// holds only nodes. A child or children field can't hold an Entry or a
+// kdltext.Comment, even as the elements of a slice or map: they are entries
+// and comments rather than nodes, and are held by the entries, comment,
+// linecomment and headercomment fields. The keys of props and children maps
+// follow the same rules as any other map.
 //
-// A field with the tag "-" is ignored, and so are unexported fields. The
-// fields of an embedded struct, or pointer to a struct, without a tag are
-// treated as fields of the outer struct. Names must be unique among the child
-// fields, and among the prop fields, and a struct can have only one field each
-// of args, props, entries, children, name, type, comment, linecomment and
-// headercomment. Unmarshal reports an error for the arguments, properties and
-// children that have no field, unless DiscardUnknown is set.
+// Unmarshal reports an error for arguments, properties and children that have
+// no field, unless DiscardUnknown is set.
+//
+// # Modifiers
+//
+// A field can have these modifiers, along with its kind:
+//
+//   - omitzero: Marshal leaves the field out when its value is zero. A value
+//     is zero if it has an IsZero method that says so, such as a time.Time
+//     does, and otherwise if it is the zero value of its type, as reported by
+//     [reflect.Value.IsZero]. Unmarshal pays no attention to it.
+//
+// What leaving a field out means depends on the kind. A child field writes no
+// node and a prop field writes no property. A name, type, comment,
+// linecomment or headercomment field acts as if it were empty. An arg field
+// writes no argument, so the arguments after it move up a place; that makes
+// omitzero safe only on the last arg field. Without omitzero, Marshal writes a
+// nil interface, or a nil pointer to a value type, as #null, and a zero value
+// as itself. Use omitzero for fields that are optional.
 //
 // # Comments
 //
@@ -333,9 +344,34 @@
 // neither are its fields and elements.
 //
 // For an argument or property, Marshal writes a nil pointer as #null, and
-// Unmarshal sets a pointer to nil for #null, without calling a method. A value
-// that is not a pointer has its UnmarshalKDL method read #null, as any other
-// value.
+// Unmarshal sets a pointer to nil for #null, without calling a method. A
+// value that is not a pointer has its UnmarshalKDL method read #null like any
+// other value.
+//
+// Functions can stand in for the methods, for types that lack them, such as
+// time.Duration, or whose methods don't suit. Make them with [MarshalFunc]
+// and [UnmarshalFunc], and pass them to Marshal and Unmarshal with
+// [WithMarshalers] and [WithUnmarshalers]. Each function is given the value,
+// or a pointer to it, and the live kdltext.Encoder or kdltext.Decoder.
+//
+// Unlike methods, functions don't change how a type is classified, so they
+// don't change where its values appear in a document. A function for a value
+// type writes and reads the value's single KindValue token, wherever the
+// default rules put it: as an argument, a property, or a node's single
+// argument. A function for any other type writes and reads its node's
+// contents, as methods do, with the same checks.
+//
+// Functions run in the order that [JoinMarshalers] and [JoinUnmarshalers]
+// give them, before the methods, just as methods run before
+// encoding.TextMarshaler and encoding.TextUnmarshaler. Each may return
+// errors.ErrUnsupported without writing or reading anything, to pass the
+// value on to the next one, and finally to the default rules. For a node, a
+// function can also delegate the node's contents as a method can, by
+// converting the value to a type without functions or methods. Calling
+// MarshalEncode or UnmarshalDecode with the value unchanged calls the
+// function again. The options, including the functions, carry over to the
+// MarshalEncode and UnmarshalDecode calls of methods and functions, through
+// the Options method of the Encoder or Decoder.
 //
 // # Documents
 //
@@ -353,22 +389,23 @@
 // Go value skips comments, except for a struct's entries, comment,
 // linecomment and headercomment fields.
 //
-// [Document.From] and [Document.To] convert between Go values and Documents
-// as Marshal and Unmarshal convert between Go values and KDL text, by the
-// same rules. They copy the data directly, without KDL text, but for the
-// values of types implementing Marshaler and Unmarshaler, whose methods write
-// and read their parts of the document as KDL text. The options that concern
-// KDL text do not apply to From and To.
+// [Document.From] and [Document.To] convert between Go values and Documents by
+// the same rules that Marshal and Unmarshal use for KDL text. They copy the
+// data directly, without KDL text, except for values with methods or
+// functions, which write and read their parts of the document as KDL text.
+// The options that concern KDL text don't apply to From and To.
 //
 // # Options
 //
-// The functions of this package take [Options], from this package or from
+// The functions in this package take [Options] from this package or from
 // kdltext. Marshal and Unmarshal pass them on to the kdltext.Encoder or
 // kdltext.Decoder they create, which take the options described in the
 // kdltext package documentation, such as [kdltext.WithVersion] and
-// [kdltext.WithIndent]. Unmarshal also takes [DiscardUnknown], which ignores
-// the arguments, properties and child nodes that a struct has no field for,
-// rather than reporting an error. [JoinOptions] combines several options into
+// [kdltext.WithIndent]. Unmarshal also takes [DiscardUnknown], to skip the
+// arguments, properties and child nodes that a struct has no field for
+// instead of reporting an error. Marshal takes [WithMarshalers], and
+// Unmarshal takes [WithUnmarshalers], to supply functions for particular
+// types (see Custom marshaling). [JoinOptions] combines several options into
 // one. Later options take precedence over earlier ones.
 //
 // # Formatting

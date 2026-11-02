@@ -12,13 +12,13 @@ import (
 	"github.com/miquella/kuddle/kdltext"
 )
 
-// From sets d to the document for in, as Marshal would write it. Rather than
-// writing KDL text, From copies the data of in into d directly, except for
-// the values of types implementing Marshaler, whose MarshalKDL methods write
-// KDL text that From reads into d. The options of kdltext.NewEncoder, which
-// concern KDL text, do not apply. Unlike Marshal, From does not check that
-// the comments and values of d can be written as KDL text. If From returns
-// an error, d is unchanged.
+// From sets d to the document that Marshal would write for in. Instead of
+// going through KDL text, From copies the data of in into d directly. The
+// exception is values with MarshalKDL methods or marshaler functions, which
+// write KDL text that From reads into d. From accepts WithMarshalers; the
+// options of kdltext.NewEncoder concern KDL text and don't apply. Unlike
+// Marshal, From doesn't check that the comments and values in d can be
+// written as KDL text. If From returns an error, d is unchanged.
 func (d *Document) From(in any, opts ...Options) error {
 	w := &treeWriter{levels: make([]tokenCount, 1), opts: kdlopts.Join(opts...)}
 	if err := marshal(w, in); err != nil {
@@ -29,10 +29,10 @@ func (d *Document) From(in any, opts ...Options) error {
 }
 
 // To decodes d into out, which must be a non-nil pointer, as Unmarshal would
-// decode the KDL text of d. Rather than reading KDL text, To copies the data
-// of d into out directly, except for the values of types implementing
-// Unmarshaler, whose UnmarshalKDL methods read their part of d as KDL text.
-// The option that applies is DiscardUnknown. Since d has no positions in an
+// decode d's KDL text. Instead of going through KDL text, To copies the data
+// of d into out directly. The exception is values with UnmarshalKDL methods
+// or unmarshaler functions, which read their part of d as KDL text. To
+// accepts DiscardUnknown and WithUnmarshalers. Since d has no positions in an
 // input, the Pos of a SemanticError from To is zero.
 func (d *Document) To(out any, opts ...Options) error {
 	r := &treeReader{levels: []treeLevel{{children: d.Nodes}}, opts: kdlopts.Join(opts...)}
@@ -257,34 +257,43 @@ func isDocument(m any) bool {
 	return ok
 }
 
-// call calls the UnmarshalKDL method u with d.in, which is a
-// *kdltext.Decoder, unless u is a *Document, which reads any tokenReader.
-func (d *decoder) call(u Unmarshaler) error {
-	if dec, ok := d.in.(*kdltext.Decoder); ok {
-		return u.UnmarshalKDL(dec)
+// call calls the UnmarshalKDL method or function c with d.in, which is a
+// *kdltext.Decoder, unless c is the method of a *Document, which reads any
+// tokenReader.
+func (d *decoder) call(c unmarshalCall) error {
+	dec, ok := d.in.(*kdltext.Decoder)
+	switch {
+	case c.fn != nil:
+		return c.fn.call(dec, c.v)
+	case ok:
+		return c.method.UnmarshalKDL(dec)
 	}
-	return u.(*Document).read(d.in)
+	return c.method.(*Document).read(d.in)
 }
 
-// call calls the MarshalKDL method m with e.out, which is a
-// *kdltext.Encoder, unless m is a *Document, which writes to any
-// tokenWriter.
-func (e *encoder) call(m Marshaler) error {
-	if enc, ok := e.out.(*kdltext.Encoder); ok {
-		return m.MarshalKDL(enc)
+// call calls the MarshalKDL method or function c with e.out, which is a
+// *kdltext.Encoder, unless c is the method of a *Document, which writes to
+// any tokenWriter.
+func (e *encoder) call(c marshalCall) error {
+	enc, ok := e.out.(*kdltext.Encoder)
+	switch {
+	case c.fn != nil:
+		return c.fn.call(enc, c.v)
+	case ok:
+		return c.method.MarshalKDL(enc)
 	}
-	return writeNodes(e.out, m.(*Document).Nodes)
+	return writeNodes(e.out, c.method.(*Document).Nodes)
 }
 
-// textNodeMethod is nodeMethod for the node ns, decoded from r: the method
-// reads the rest of the node from a kdltext.Decoder, as KDL text.
-func (d *decoder) textNodeMethod(r *treeReader, ns *nodeStart, t reflect.Type, u Unmarshaler) (bool, error) {
+// textNodeMethod is nodeCall for the node ns, decoded from r: the method or
+// function reads the rest of the node from a kdltext.Decoder, as KDL text.
+func (d *decoder) textNodeMethod(r *treeReader, ns *nodeStart, t reflect.Type, c unmarshalCall) (bool, error) {
 	dec, err := d.textDecoder(r, false)
 	if err != nil {
 		return true, d.error(ns, entryRef{}, t, err)
 	}
 	d.in = dec
-	done, err := d.nodeMethod(ns, t, u)
+	done, err := d.nodeCall(ns, t, c)
 	d.in = r
 	if !done || err != nil {
 		return done, noPos(err)
@@ -293,15 +302,15 @@ func (d *decoder) textNodeMethod(r *treeReader, ns *nodeStart, t reflect.Type, u
 	return true, d.end(ns)
 }
 
-// textValueMethod is valueMethod for the next value of r: the method reads
-// it from a kdltext.Decoder, as KDL text.
-func (d *decoder) textValueMethod(r *treeReader, u Unmarshaler) (bool, error) {
+// textValueMethod is valueCall for the next value of r: the method or
+// function reads it from a kdltext.Decoder, as KDL text.
+func (d *decoder) textValueMethod(r *treeReader, c unmarshalCall) (bool, error) {
 	dec, err := d.textDecoder(r, true)
 	if err != nil {
 		return true, err
 	}
 	d.in = dec
-	done, err := d.valueMethod(u)
+	done, err := d.valueCall(c)
 	d.in = r
 	if done && err == nil {
 		r.ReadToken()

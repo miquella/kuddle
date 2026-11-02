@@ -142,6 +142,54 @@ func ExampleMarshaler() {
 	// }
 }
 
+// Functions marshal and unmarshal a time.Duration, which has no methods, as a
+// string, such as "1m30s", wherever it is: as a property, or as the single
+// argument of a node.
+func ExampleWithMarshalers() {
+	marshal := kuddle.MarshalFunc(func(enc *kdltext.Encoder, d time.Duration) error {
+		return enc.WriteToken(kdltext.Token{Kind: kdltext.KindValue, Value: kdltext.String(d.String())})
+	})
+	unmarshal := kuddle.UnmarshalFunc(func(dec *kdltext.Decoder, d *time.Duration) error {
+		t, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if t.Kind != kdltext.KindValue || t.Value.Kind() != kdltext.ValueString {
+			return fmt.Errorf("want a duration string, not %v", t.Value)
+		}
+		*d, err = time.ParseDuration(t.Value.String())
+		return err
+	})
+	opts := kuddle.JoinOptions(kuddle.WithMarshalers(marshal), kuddle.WithUnmarshalers(unmarshal))
+
+	type Check struct {
+		URL      string        `kdl:",arg"`
+		Interval time.Duration `kdl:"interval,prop"`
+		Timeout  time.Duration `kdl:"timeout"`
+	}
+	var checks struct {
+		Checks []Check `kdl:"check"`
+	}
+	input := `check "https://example.com/health" interval="1m30s" { timeout "5s"; }`
+	if err := kuddle.Unmarshal([]byte(input), &checks, opts); err != nil {
+		log.Fatal(err)
+	}
+	c := &checks.Checks[0]
+	fmt.Println(c.Interval, c.Timeout)
+
+	c.Timeout = 10 * time.Second
+	b, err := kuddle.Marshal(checks, opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+	os.Stdout.Write(b)
+	// Output:
+	// 1m30s 5s
+	// check "https://example.com/health" interval="1m30s" {
+	//     timeout "10s"
+	// }
+}
+
 // Port is a TCP port, written in KDL as a number or as the name of a
 // service, such as "https". Its method decodes names, and leaves numbers to
 // the default rules.

@@ -18,11 +18,27 @@ func TestJoin(t *testing.T) {
 	}
 }
 
+func TestJoinMarshalers(t *testing.T) {
+	m1, m2, u := new(int), new(int), new(int)
+	s := Join(
+		&Struct{Present: Marshalers, Marshalers: m1},
+		&Struct{Present: Unmarshalers, Unmarshalers: u},
+		&Struct{Present: Marshalers, Marshalers: m2},
+		Bool(DiscardUnknown, true),
+	)
+	if s.Marshalers != m2 || s.Unmarshalers != u {
+		t.Errorf("got %+v, want Marshalers %p and Unmarshalers %p", *s, m2, u)
+	}
+	if o := s.Only(Semantic); o.Marshalers != m2 || o.Unmarshalers != u {
+		t.Errorf("Only(Semantic): got %+v", *o)
+	}
+}
+
 func TestOnly(t *testing.T) {
 	s := Join(
 		&Struct{Present: Version, Version: 1},
 		Bool(DiscardUnknown, true),
-		Bool(DiscardUnknown, true),
+		Bool(QuoteIdentifiers, true),
 		&Struct{Present: Newline, Newline: "\r\n"},
 	)
 	want := Struct{Present: DiscardUnknown | Version, Flags: DiscardUnknown, Version: 1}

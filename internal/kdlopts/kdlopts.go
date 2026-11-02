@@ -30,10 +30,12 @@ const (
 	RejectMultipleChildrenBlocks
 	RejectDuplicateProperties
 	MaxTokenSize
+	Marshalers
+	Unmarshalers
 
 	// Semantic are the options of the kuddle package, which a kdltext
 	// Decoder or Encoder keeps, for its Options method, but does not apply.
-	Semantic = DiscardUnknown
+	Semantic = DiscardUnknown | Marshalers | Unmarshalers
 
 	// boolOptions are the options whose value is held in Struct.Flags.
 	boolOptions = DiscardUnknown | QuoteIdentifiers |
@@ -51,6 +53,11 @@ type Struct struct {
 	Indent       string
 	Newline      string
 	MaxTokenSize int
+
+	// Marshalers and Unmarshalers hold a *kuddle.Marshalers and a
+	// *kuddle.Unmarshalers, which this package can't name.
+	Marshalers   any
+	Unmarshalers any
 }
 
 func (*Struct) KDLOptions(NotForPublicUse) {}
@@ -85,6 +92,12 @@ func (s *Struct) Join(opts ...Options) {
 		}
 		if src.Present&MaxTokenSize != 0 {
 			s.MaxTokenSize = src.MaxTokenSize
+		}
+		if src.Present&Marshalers != 0 {
+			s.Marshalers = src.Marshalers
+		}
+		if src.Present&Unmarshalers != 0 {
+			s.Unmarshalers = src.Unmarshalers
 		}
 	}
 }

@@ -21,8 +21,8 @@ import (
 var ErrUnknown = errors.New("unknown to the Go type")
 
 // Unmarshal decodes the KDL document in into out, which must be a non-nil
-// pointer, by the rules described in the package documentation. The options
-// that apply are DiscardUnknown and those of kdltext.NewDecoder.
+// pointer, following the rules in the package documentation. It accepts
+// DiscardUnknown, WithUnmarshalers and the options of kdltext.NewDecoder.
 func Unmarshal(in []byte, out any, opts ...Options) error {
 	return UnmarshalRead(bytes.NewReader(in), out, opts...)
 }
@@ -45,10 +45,10 @@ func UnmarshalRead(in io.Reader, out any, opts ...Options) error {
 // errors.ErrUnsupported without reading anything, or reads the KindValue
 // token itself.
 //
-// The options that apply are those in was created with, and the options of
-// this package among opts, which take precedence. The UnmarshalKDL methods
-// that UnmarshalDecode calls see only the options of in, through its Options
-// method, and pass them on when they call UnmarshalDecode themselves.
+// UnmarshalDecode uses the options in was created with, along with the
+// options from this package in opts, which take precedence. The UnmarshalKDL
+// methods and functions it calls see only the options of in, through its
+// Options method, and pass them on when they call UnmarshalDecode themselves.
 func UnmarshalDecode(in *kdltext.Decoder, out any, opts ...Options) error {
 	return unmarshal(in, out, opts...)
 }
@@ -63,7 +63,7 @@ func unmarshal(in tokenReader, out any, opts ...Options) error {
 		return fmt.Errorf("kuddle: cannot unmarshal into non-pointer %T", out)
 	}
 	v := rv.Elem()
-	d := &decoder{in: in, ignore: o.Flags&kdlopts.DiscardUnknown != 0}
+	d := &decoder{in: in, ignore: o.Flags&kdlopts.DiscardUnknown != 0, fn: newFuncs(o)}
 	root := &nodeStart{root: true, inNode: in.StackDepth() > 0}
 	if !root.inNode {
 		if v.Kind() == reflect.Interface && v.NumMethod() == 0 {
@@ -85,6 +85,7 @@ type decoder struct {
 	in     tokenReader
 	ignore bool          // whether what a struct has no field for is ignored
 	path   []pathSegment // the nodes being decoded
+	fn     *funcs        // the functions of the options, or nil
 
 	// above holds the comments read since the last node ended or began, which
 	// come before the next node: its comment field holds them, or, for the
@@ -230,9 +231,12 @@ func (d *decoder) node(ns *nodeStart, v reflect.Value) error {
 			return err
 		}
 	}
-	if u, ok := asUnmarshaler(v); ok {
-		if done, err := d.nodeMethod(ns, v.Type(), u); done {
-			return err
+	// The functions of a value type read its argument instead (see valueNode).
+	if m, ok := asUnmarshaler(v); ok || d.fn != nil && !isValueType(v.Type()) {
+		if us, ok := d.unmarshalers(v, m); ok {
+			if done, err := d.nodeMethod(ns, v.Type(), &us); done {
+				return err
+			}
 		}
 	}
 
@@ -339,21 +343,47 @@ func asUnmarshaler(v reflect.Value) (Unmarshaler, bool) {
 	return v.Addr().Interface().(Unmarshaler), true
 }
 
-// nodeMethod calls the UnmarshalKDL method u of a value of type t, for the
-// node ns, and reads the end of the node. It reports false if the method
-// returned errors.ErrUnsupported without reading anything.
-func (d *decoder) nodeMethod(ns *nodeStart, t reflect.Type, u Unmarshaler) (bool, error) {
-	if r, ok := d.in.(*treeReader); ok && !isDocument(u) {
-		return d.textNodeMethod(r, ns, t, u)
+// unmarshalers returns the functions that decode into v, which is
+// addressable, followed by its UnmarshalKDL method m, if not nil, in order of
+// precedence, or false if there are none. The functions apply only if v is
+// not a pointer. Callers check for a method or any functions first, with
+// asUnmarshaler and d.fn, to keep the common case of neither cheap.
+func (d *decoder) unmarshalers(v reflect.Value, m Unmarshaler) (unmarshalers, bool) {
+	us := unmarshalers{v: v, method: m}
+	if d.fn != nil && v.Kind() != reflect.Pointer {
+		us.fns = d.fn.u.lookup(v.Type())
+	}
+	return us, m != nil || len(us.fns) > 0
+}
+
+// nodeMethod calls the functions and UnmarshalKDL method us of a value of
+// type t, in order, for the node ns, until one does not return
+// errors.ErrUnsupported without reading anything, and reads the end of the
+// node. It reports false if none did.
+func (d *decoder) nodeMethod(ns *nodeStart, t reflect.Type, us *unmarshalers) (bool, error) {
+	for i := range us.len() {
+		if done, err := d.nodeCall(ns, t, us.at(i)); done {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// nodeCall calls the method or function c of a value of type t, for the node
+// ns, and reads the end of the node. It reports false if c returned
+// errors.ErrUnsupported without reading anything.
+func (d *decoder) nodeCall(ns *nodeStart, t reflect.Type, c unmarshalCall) (bool, error) {
+	if r, ok := d.in.(*treeReader); ok && !isDocument(c.method) {
+		return d.textNodeMethod(r, ns, t, c)
 	}
 	m := d.mark()
-	err := d.call(u)
+	err := d.call(c)
 	read := d.readSince(m)
 	switch {
 	case err == errors.ErrUnsupported && read == 0:
 		return false, nil
 	case err == errors.ErrUnsupported:
-		err = errors.New("UnmarshalKDL returned errors.ErrUnsupported after reading input")
+		err = fmt.Errorf("%s returned errors.ErrUnsupported after reading input", c.name())
 	case err != nil:
 		if se, ok := errors.AsType[*SemanticError](err); ok {
 			return true, se.within(formatPath(d.path), ns.pos)
@@ -362,9 +392,9 @@ func (d *decoder) nodeMethod(ns *nodeStart, t reflect.Type, u Unmarshaler) (bool
 			return true, err
 		}
 	case read < 0:
-		err = errors.New("UnmarshalKDL read past the end of the node")
+		err = fmt.Errorf("%s read past the end of the node", c.name())
 	case d.in.StackDepth() > m.depth || !d.atEnd(ns):
-		err = errors.New("UnmarshalKDL did not read all of the node")
+		err = fmt.Errorf("%s did not read all of the node", c.name())
 	default:
 		return true, d.end(ns)
 	}
@@ -406,6 +436,16 @@ func (d *decoder) readSince(m mark) int64 {
 // valueNode decodes the node ns, which must have a single argument, into v,
 // of a value type or a pointer to one, by the default rules.
 func (d *decoder) valueNode(ns *nodeStart, v reflect.Value) error {
+	if d.fn != nil && d.peek() == kdltext.KindValue {
+		// The functions for v, if any, read its argument.
+		if err := d.wrap(ns, argRef(1), v.Type(), d.value(v, defaultValue)); err != nil {
+			return err
+		}
+		if d.atEnd(ns) {
+			return d.end(ns)
+		}
+		return d.notSingle(ns, v.Type(), 1)
+	}
 	if d.peek() == kdltext.KindValue {
 		t, _ := d.in.ReadToken()
 		if d.atEnd(ns) {
@@ -857,12 +897,22 @@ func (d *decoder) value(v reflect.Value, mode valueMode) error {
 			return err
 		}
 	}
-	if u, ok := asUnmarshaler(v); ok {
-		switch mode {
-		case elemValue:
+	var us unmarshalers
+	m, ok := asUnmarshaler(v)
+	if ok || d.fn != nil {
+		us, ok = d.unmarshalers(v, m)
+	}
+	if ok {
+		switch {
+		case isValueType(v.Type()):
+			// Its functions read it wherever it is a value; it has no method.
+			if done, err := d.valueMethod(&us); done {
+				return err
+			}
+		case mode == elemValue:
 			return fmt.Errorf("%s can't be decoded from a single value", v.Type())
-		case fieldValue:
-			if done, err := d.valueMethod(u); done {
+		case mode == fieldValue:
+			if done, err := d.valueMethod(&us); done {
 				return err
 			}
 		}
@@ -993,27 +1043,40 @@ func setValue(v reflect.Value, val kdltext.Value) error {
 	return nil
 }
 
-// valueMethod calls the UnmarshalKDL method u for the next token, a KDL
-// value token, for the method to read. It reports false if the method
-// returned errors.ErrUnsupported without reading anything.
-func (d *decoder) valueMethod(u Unmarshaler) (bool, error) {
-	if r, ok := d.in.(*treeReader); ok && !isDocument(u) {
-		return d.textValueMethod(r, u)
+// valueMethod calls the functions and UnmarshalKDL method us, in order, for
+// the next token, a KDL value token, for them to read, until one does not
+// return errors.ErrUnsupported without reading anything. It reports false if
+// none did.
+func (d *decoder) valueMethod(us *unmarshalers) (bool, error) {
+	for i := range us.len() {
+		if done, err := d.valueCall(us.at(i)); done {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// valueCall calls the method or function c for the next token, a KDL value
+// token, for it to read. It reports false if c returned
+// errors.ErrUnsupported without reading anything.
+func (d *decoder) valueCall(c unmarshalCall) (bool, error) {
+	if r, ok := d.in.(*treeReader); ok && !isDocument(c.method) {
+		return d.textValueMethod(r, c)
 	}
 	m := d.mark()
-	err := d.call(u)
+	err := d.call(c)
 	read := d.readSince(m)
 	switch {
 	case err == errors.ErrUnsupported && read == 0:
 		return false, nil
 	case err == errors.ErrUnsupported:
-		return true, errors.New("UnmarshalKDL returned errors.ErrUnsupported after reading input")
+		return true, fmt.Errorf("%s returned errors.ErrUnsupported after reading input", c.name())
 	case err != nil:
 		return true, err
 	case read == 0:
-		return true, errors.New("UnmarshalKDL did not read the value")
+		return true, fmt.Errorf("%s did not read the value", c.name())
 	case read != 1:
-		return true, errors.New("UnmarshalKDL read more than the value")
+		return true, fmt.Errorf("%s read more than the value", c.name())
 	}
 	return true, nil
 }

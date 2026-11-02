@@ -11,13 +11,14 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/miquella/kuddle/internal/kdlopts"
 	"github.com/miquella/kuddle/internal/lexer"
 	"github.com/miquella/kuddle/kdltext"
 )
 
-// Marshal returns the KDL document for in, encoded by the rules described in
-// the package documentation. The options that apply are those of
-// kdltext.NewEncoder. The document ends in a newline, as each node does. An
+// Marshal returns the KDL document for in, encoded following the rules in the
+// package documentation. It accepts WithMarshalers and the options of
+// kdltext.NewEncoder. Like every node, the document ends in a newline, and an
 // empty document is a single newline.
 func Marshal(in any, opts ...Options) ([]byte, error) {
 	var b bytes.Buffer
@@ -49,15 +50,16 @@ func MarshalWrite(out io.Writer, in any, opts ...Options) error {
 // method returns errors.ErrUnsupported without writing anything, or writes
 // the KindValue token itself.
 //
-// The options that apply are those out was created with, and the options of
-// this package among opts, though none of them concern marshaling yet. The
-// MarshalKDL methods that MarshalEncode calls see only the options of out,
-// through its Options method.
+// MarshalEncode uses the options out was created with, along with the
+// options from this package in opts, which take precedence. The MarshalKDL
+// methods and functions it calls see only the options of out, through its
+// Options method, and pass them on when they call MarshalEncode themselves.
 func MarshalEncode(out *kdltext.Encoder, in any, opts ...Options) error {
-	return marshal(out, in)
+	return marshal(out, in, opts...)
 }
 
-func marshal(out tokenWriter, in any) error {
+// marshal writes in to out, with the options of out and opts.
+func marshal(out tokenWriter, in any, opts ...Options) error {
 	switch in := in.(type) {
 	case nil:
 		return errors.New("kuddle: cannot marshal nil")
@@ -67,11 +69,18 @@ func marshal(out tokenWriter, in any) error {
 		return writeNode(out, &in)
 	}
 
+	o := out.Options()
+	if len(opts) > 0 {
+		j := kdlopts.Join(o)
+		j.Join(opts...)
+		o = j
+	}
+	e := &encoder{out: out, inNode: out.StackDepth() > 0, fn: newFuncs(o)}
 	v := addressable(reflect.ValueOf(in))
 	if isNilNode(v) {
 		return errors.New("kuddle: cannot marshal nil")
 	}
-	e := &encoder{out: out, root: v.Type(), inNode: out.StackDepth() > 0}
+	e.root = v.Type()
 	if !e.inNode && isValueType(v.Type()) {
 		return e.error(v.Type(), errors.New("a document can't be marshaled from a value type"))
 	}
@@ -84,6 +93,7 @@ type encoder struct {
 	inNode bool          // whether the root is the contents of the node out is within
 	open   int           // the number of nodes started and not yet ended
 	path   []pathSegment // the nodes being marshaled
+	fn     *funcs        // the functions of the options, or nil
 
 	// taken holds the child fields of the struct whose children field is
 	// being marshaled, if it is a slice, for start to check that the node it
@@ -194,6 +204,13 @@ func (e *encoder) node(v reflect.Value, name string, own, root bool) error {
 		// As a struct field or map value, it is left out instead.
 		return e.error(dynamicType(v), errors.New("a nil pointer to a node can't be marshaled as an element"))
 	}
+	if e.fn != nil {
+		// The functions of a value type write its argument instead (see
+		// value).
+		if ms, ok := e.funcsFor(v); ok && !isValueType(ms.v.Type()) {
+			return e.marshaler(ms, v, name, own, root)
+		}
+	}
 	for n := 0; v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface; n++ {
 		if n == maxIndirections {
 			return e.error(v.Type(), errCycle)
@@ -202,12 +219,12 @@ func (e *encoder) node(v reflect.Value, name string, own, root bool) error {
 			return e.null(v.Type(), name, root)
 		}
 		if m, ok := asMarshaler[Marshaler](v); ok {
-			return e.marshaler(m, v, name, own, root)
+			return e.marshaler(marshalers{method: m}, v, name, own, root)
 		}
 		v = v.Elem()
 	}
 	if m, ok := asMarshaler[Marshaler](v); ok {
-		return e.marshaler(m, v, name, own, root)
+		return e.marshaler(marshalers{method: m}, v, name, own, root)
 	}
 	if v.Type() == nodeType {
 		if n := pointerTo[Node](v); n.IsComment() {
@@ -319,11 +336,33 @@ func (e *encoder) null(t reflect.Type, name string, root bool) error {
 	return e.end(root, false)
 }
 
-// marshaler writes the node for v, whose MarshalKDL method is m: its start,
-// as for v by the default rules, its contents, from the method, and its end.
-// If the method returns errors.ErrUnsupported without writing anything, the
-// contents are written by the default rules.
-func (e *encoder) marshaler(m Marshaler, v reflect.Value, name string, own, root bool) error {
+// funcsFor returns the functions for the value at the end of the pointers and
+// interfaces of v, if it has any, followed by the first MarshalKDL method
+// found along them, if any, as node and valueMarshalers would find it.
+func (e *encoder) funcsFor(v reflect.Value) (marshalers, bool) {
+	var ms marshalers
+	for n := 0; ; n++ {
+		indirect := v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface
+		if indirect && v.IsNil() || n == maxIndirections {
+			return marshalers{}, false
+		}
+		if ms.method == nil {
+			ms.method, _ = asMarshaler[Marshaler](v)
+		}
+		if !indirect {
+			break
+		}
+		v = v.Elem()
+	}
+	ms.fns, ms.v = e.fn.m.lookup(v.Type()), v
+	return ms, len(ms.fns) > 0
+}
+
+// marshaler writes the node for v, whose functions and MarshalKDL method are
+// ms: its start, as for v by the default rules, its contents, from the first
+// of ms that does not return errors.ErrUnsupported without writing anything,
+// or else by the default rules, and its end.
+func (e *encoder) marshaler(ms marshalers, v reflect.Value, name string, own, root bool) error {
 	t := v.Type()
 	for n := 0; (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) && !v.IsNil(); n++ {
 		if n == maxIndirections {
@@ -334,7 +373,7 @@ func (e *encoder) marshaler(m Marshaler, v reflect.Value, name string, own, root
 	if err := e.startNode(v, name, own, root); err != nil {
 		return err
 	}
-	done, err := e.nodeMethod(m, t)
+	done, err := e.nodeMethod(&ms, t)
 	if err != nil {
 		return err
 	}
@@ -346,12 +385,25 @@ func (e *encoder) marshaler(m Marshaler, v reflect.Value, name string, own, root
 	return e.end(root, false)
 }
 
-// nodeMethod calls the MarshalKDL method m of a value of type t, to write the
-// contents of its node. It reports false if the method returned
-// errors.ErrUnsupported without writing anything.
-func (e *encoder) nodeMethod(m Marshaler, t reflect.Type) (bool, error) {
-	if w, ok := e.out.(*treeWriter); ok && !isDocument(m) {
-		done, err := e.textMethod(w, func() (bool, error) { return e.nodeMethod(m, t) })
+// nodeMethod calls the functions and MarshalKDL method ms of a value of type
+// t, in order, to write the contents of its node, until one does not return
+// errors.ErrUnsupported without writing anything. It reports false if none
+// did.
+func (e *encoder) nodeMethod(ms *marshalers, t reflect.Type) (bool, error) {
+	for i := range ms.len() {
+		if done, err := e.nodeCall(ms.at(i), t); done {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// nodeCall calls the method or function c of a value of type t, to write the
+// contents of its node. It reports false if c returned errors.ErrUnsupported
+// without writing anything.
+func (e *encoder) nodeCall(c marshalCall, t reflect.Type) (bool, error) {
+	if w, ok := e.out.(*treeWriter); ok && !isDocument(c.method) {
+		done, err := e.textMethod(w, func() (bool, error) { return e.nodeCall(c, t) })
 		if err != nil {
 			return true, e.error(t, err)
 		}
@@ -359,20 +411,20 @@ func (e *encoder) nodeMethod(m Marshaler, t reflect.Type) (bool, error) {
 	}
 	depth := e.out.StackDepth()
 	_, n := e.out.StackIndex(depth)
-	err := e.call(m)
+	err := e.call(c)
 	switch {
 	case err == errors.ErrUnsupported && e.unchanged(depth, n):
 		return false, nil
 	case err == errors.ErrUnsupported:
-		err = errors.New("MarshalKDL returned errors.ErrUnsupported after writing output")
+		err = fmt.Errorf("%s returned errors.ErrUnsupported after writing output", c.name())
 	case err != nil:
 		if se, ok := errors.AsType[*SemanticError](err); ok {
 			return true, se.within(formatPath(e.path), kdltext.Position{})
 		}
 	case e.out.StackDepth() > depth:
-		err = errors.New("MarshalKDL started a node it did not end")
+		err = fmt.Errorf("%s started a node it did not end", c.name())
 	case e.out.StackDepth() < depth:
-		err = errors.New("MarshalKDL ended the node it was writing")
+		err = fmt.Errorf("%s ended the node it was writing", c.name())
 	default:
 		return true, nil
 	}
@@ -733,38 +785,26 @@ func (e *encoder) prop(v reflect.Value, name string, mode valueMode) error {
 }
 
 // value writes v as a KDL value, the given entry of the node: an argument,
-// or the value of a property whose name has been written. If mode is
-// fieldValue, a type implementing Marshaler marshals itself.
+// or the value of a property whose name has been written. The functions of
+// a value type write it in any mode. If mode is fieldValue, any other type
+// with functions or implementing Marshaler marshals itself.
 func (e *encoder) value(v reflect.Value, entry entryRef, mode valueMode) error {
 	if err := e.checkEntry(); err != nil {
 		return err
 	}
 	typ := v.Type()
-	if mode == fieldValue {
-		// A nil pointer is #null, without calling its method. The method of
-		// the value in an interface is called on the value.
-		for n, w := 0, v; ; n, w = n+1, w.Elem() {
-			if n == maxIndirections {
-				return e.entryError(entry, typ, errCycle)
+	if mode == fieldValue || e.fn != nil && isValueType(dynamicType(v)) {
+		ms, ok, err := e.valueMarshalers(v)
+		if err != nil {
+			return e.entryError(entry, typ, err)
+		}
+		if ok {
+			done, err := e.valueMethod(&ms)
+			if err != nil {
+				return e.entryError(entry, typ, err)
 			}
-			indirect := w.Kind() == reflect.Pointer || w.Kind() == reflect.Interface
-			if indirect && w.IsNil() {
-				break
-			}
-			if w.Kind() != reflect.Interface {
-				if m, ok := asMarshaler[Marshaler](w); ok {
-					done, err := e.valueMethod(m)
-					if err != nil {
-						return e.entryError(entry, typ, err)
-					}
-					if done {
-						return nil
-					}
-					break
-				}
-			}
-			if !indirect {
-				break
+			if done {
+				return nil
 			}
 		}
 	}
@@ -830,21 +870,63 @@ func rawValue(v reflect.Value) (kdltext.Value, error) {
 	return kdltext.Value{}, fmt.Errorf("%s can't be marshaled as a single value", v.Type())
 }
 
-// valueMethod calls the MarshalKDL method m to write a single value. It
-// reports false if the method returned errors.ErrUnsupported without
-// writing anything, for the value to be written by the default rules.
-func (e *encoder) valueMethod(m Marshaler) (bool, error) {
-	if w, ok := e.out.(*treeWriter); ok && !isDocument(m) {
-		return e.textMethod(w, func() (bool, error) { return e.valueMethod(m) })
+// valueMarshalers returns the functions and MarshalKDL method that write v
+// as a single value, or false if there are none, or if v is a nil pointer or
+// interface, which is #null without calling them. The method of the value
+// in an interface is called on the value.
+func (e *encoder) valueMarshalers(v reflect.Value) (marshalers, bool, error) {
+	if e.fn != nil {
+		if ms, ok := e.funcsFor(v); ok {
+			return ms, true, nil
+		}
+	}
+	for n := 0; ; n, v = n+1, v.Elem() {
+		if n == maxIndirections {
+			return marshalers{}, false, errCycle
+		}
+		indirect := v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface
+		if indirect && v.IsNil() {
+			return marshalers{}, false, nil
+		}
+		if v.Kind() != reflect.Interface {
+			if m, ok := asMarshaler[Marshaler](v); ok {
+				return marshalers{method: m}, true, nil
+			}
+		}
+		if !indirect {
+			return marshalers{}, false, nil
+		}
+	}
+}
+
+// valueMethod calls the functions and MarshalKDL method ms, in order, to
+// write a single value, until one does not return errors.ErrUnsupported
+// without writing anything. It reports false if none did, for the value to
+// be written by the default rules.
+func (e *encoder) valueMethod(ms *marshalers) (bool, error) {
+	for i := range ms.len() {
+		if done, err := e.valueCall(ms.at(i)); done {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// valueCall calls the method or function c to write a single value. It
+// reports false if c returned errors.ErrUnsupported without writing
+// anything.
+func (e *encoder) valueCall(c marshalCall) (bool, error) {
+	if w, ok := e.out.(*treeWriter); ok && !isDocument(c.method) {
+		return e.textMethod(w, func() (bool, error) { return e.valueCall(c) })
 	}
 	depth := e.out.StackDepth()
 	_, n := e.out.StackIndex(depth)
-	err := e.call(m)
+	err := e.call(c)
 	switch {
 	case err == errors.ErrUnsupported && e.unchanged(depth, n):
 		return false, nil
 	case err == errors.ErrUnsupported:
-		return true, errors.New("MarshalKDL returned errors.ErrUnsupported after writing output")
+		return true, fmt.Errorf("%s returned errors.ErrUnsupported after writing output", c.name())
 	case err != nil:
 		return true, err
 	}
@@ -853,7 +935,7 @@ func (e *encoder) valueMethod(m Marshaler) (bool, error) {
 			return true, nil
 		}
 	}
-	return true, errors.New("MarshalKDL did not write a single value")
+	return true, fmt.Errorf("%s did not write a single value", c.name())
 }
 
 // takenError returns the error for a props or children field that holds the
