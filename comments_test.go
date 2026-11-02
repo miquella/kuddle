@@ -254,3 +254,244 @@ func TestStructCommentValue(t *testing.T) {
 		}
 	}
 }
+
+type lineNode struct {
+	Line string     `kdl:",linecomment"`
+	Args []int      `kdl:",args"`
+	P    string     `kdl:"p,prop,omitzero"`
+	Kids []lineNode `kdl:",children"`
+}
+
+func TestStructLineComment(t *testing.T) {
+	tests := []struct {
+		name, in, line string
+		out            string // as Marshal writes it, if not in
+	}{
+		{"none", "n 1\n", "", ""},
+		{"end of line", "n 1 p=a // the end\n", "the end", ""},
+		{"after brace", "n 1 { // opens\n    - 2\n}\n", "opens", ""},
+		{"empty text", "n 1 //\n", "", "n 1\n"},
+		{"continued", "n 1 \\ // first\n    2 // second\n", "second", "n 1 2 // second\n"},
+		{"block", "n /* in */ 1 /* end */\n", "", "n 1\n"},
+		{"slashdash", "n 1 /- 2 // kept\n", "kept", "n 1 // kept\n"},
+		{"after children", "n 1 {\n    - 2\n} // after\n", "", "n 1 {\n    - 2\n}\n"},
+		{"comment node", "n 1 {\n    // a node's\n    - 2\n}\n", "", "n 1 {\n    // a node's\n    - 2\n}\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var v struct {
+				N lineNode `kdl:"n"`
+			}
+			v.N.Line = "stale"
+			if err := kuddle.Unmarshal([]byte(tt.in), &v); err != nil {
+				t.Fatal(err)
+			}
+			if v.N.Line != tt.line {
+				t.Errorf("got %q, want %q", v.N.Line, tt.line)
+			}
+			out, err := kuddle.Marshal(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tt.out
+			if want == "" {
+				want = tt.in
+			}
+			// Comments of children are not kept, but for their own fields.
+			if string(out) != strings.ReplaceAll(want, "    // a node's\n", "") {
+				t.Errorf("got\n%s\nwant\n%s", out, want)
+			}
+		})
+	}
+}
+
+func TestStructLineCommentValue(t *testing.T) {
+	// A kdltext.Comment field tells an empty line comment from none.
+	type node struct {
+		Line kdltext.Comment `kdl:",linecomment"`
+		Arg  int             `kdl:",arg"`
+	}
+	tests := []struct {
+		in   string
+		want kdltext.Comment
+	}{
+		{"n 1\n", kdltext.Comment{}},
+		{"n 1 //\n", kdltext.Comment{Kind: kdltext.CommentLine}},
+		{"n 1 // end\n", kdltext.Comment{Kind: kdltext.CommentLine, Text: " end"}},
+	}
+	for _, tt := range tests {
+		var v struct {
+			N node `kdl:"n"`
+		}
+		if err := kuddle.Unmarshal([]byte(tt.in), &v); err != nil {
+			t.Fatal(err)
+		}
+		if v.N.Line != tt.want {
+			t.Errorf("%q: got %+v, want %+v", tt.in, v.N.Line, tt.want)
+		}
+		out, err := kuddle.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != tt.in {
+			t.Errorf("got\n%s\nwant\n%s", out, tt.in)
+		}
+	}
+
+	_, err := kuddle.Marshal(struct {
+		N node `kdl:"n"`
+	}{node{Line: kdltext.Comment{Kind: kdltext.CommentBlock, Text: "x"}}})
+	if err == nil || !strings.Contains(err.Error(), "a linecomment field must hold a line comment") {
+		t.Errorf("block comment: got %v", err)
+	}
+}
+
+func TestStructLineCommentEntries(t *testing.T) {
+	// The line comment field takes its comment out of the entries field.
+	type node struct {
+		Line string         `kdl:",linecomment"`
+		Rest []kuddle.Entry `kdl:",entries"`
+	}
+	in := "n 1 /* b */ // first\n"
+	var v struct {
+		N node `kdl:"n"`
+	}
+	if err := kuddle.Unmarshal([]byte(in), &v); err != nil {
+		t.Fatal(err)
+	}
+	want := []kuddle.Entry{
+		kuddle.Arg(kdltext.Int(1)),
+		{Kind: kuddle.EntryComment, Comment: kdltext.Comment{Kind: kdltext.CommentBlock, Text: " b "}},
+	}
+	if v.N.Line != "first" || !equalEntries(v.N.Rest, want) {
+		t.Errorf("got %+v, want line %q and entries %+v", v.N, "first", want)
+	}
+	out, err := kuddle.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Errorf("got\n%s\nwant\n%s", out, in)
+	}
+}
+
+func TestStructLineCommentDocument(t *testing.T) {
+	// From a Document, as from KDL text.
+	var doc kuddle.Document
+	if err := kuddle.Unmarshal([]byte("n 1 // one\n"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		N lineNode `kdl:"n"`
+	}
+	if err := doc.To(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v.N.Line != "one" {
+		t.Errorf("To: got %q", v.N.Line)
+	}
+
+	v.N.Line = "two"
+	if err := doc.From(v); err != nil {
+		t.Fatal(err)
+	}
+	out, err := kuddle.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "n 1 // two\n"; string(out) != want {
+		t.Errorf("From: got %q, want %q", out, want)
+	}
+}
+
+func TestStructLineCommentRoot(t *testing.T) {
+	// The document has no line comment.
+	v := lineNode{Line: "dropped", Kids: []lineNode{{Line: "kept"}}}
+	out, err := kuddle.Marshal(struct {
+		Line string     `kdl:",linecomment"`
+		Kids []lineNode `kdl:",children"`
+	}{v.Line, v.Kids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "- // kept\n"; string(out) != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}
+
+func TestStructLineCommentErrors(t *testing.T) {
+	_, err := kuddle.Marshal(struct {
+		N lineNode `kdl:"n"`
+	}{lineNode{Line: "two\nlines"}})
+	if err == nil || !strings.Contains(err.Error(), "can't span lines") {
+		t.Errorf("multi-line: got %v", err)
+	}
+
+	var v struct {
+		Line int `kdl:",linecomment"`
+	}
+	err = kuddle.Unmarshal([]byte("n\n"), &v)
+	if err == nil || !strings.Contains(err.Error(), "a linecomment field must be a string") {
+		t.Errorf("type: got %v", err)
+	}
+}
+
+// valuesOnly reads arguments for as long as PeekKind reports KindValue.
+type valuesOnly []int64
+
+func (v *valuesOnly) UnmarshalKDL(dec *kdltext.Decoder) error {
+	for dec.PeekKind() == kdltext.KindValue {
+		t, _ := dec.ReadToken()
+		n, _ := t.Value.Int()
+		*v = append(*v, n)
+	}
+	return nil
+}
+
+// delegated is decoded and encoded by the default rules, through
+// UnmarshalDecode and MarshalEncode.
+type delegated lineNode
+
+func (d *delegated) UnmarshalKDL(dec *kdltext.Decoder) error {
+	return kuddle.UnmarshalDecode(dec, (*lineNode)(d))
+}
+
+func (d delegated) MarshalKDL(enc *kdltext.Encoder) error {
+	return kuddle.MarshalEncode(enc, lineNode(d))
+}
+
+func TestMethodComments(t *testing.T) {
+	// Comments left before the end are passed over.
+	var v struct {
+		N valuesOnly `kdl:"n"`
+	}
+	if err := kuddle.Unmarshal([]byte("n 1 2 /* x */ // y\n"), &v); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v.N, valuesOnly{1, 2}) {
+		t.Errorf("got %v", v.N)
+	}
+	// A comment among the arguments stops the loop.
+	err := kuddle.Unmarshal([]byte("n 1 /* x */ 2\n"), &v)
+	if err == nil || !strings.Contains(err.Error(), "did not read all of the node") {
+		t.Errorf("comment among arguments: got %v", err)
+	}
+
+	var d struct {
+		N delegated `kdl:"n"`
+	}
+	const in = "n 1 // kept\n"
+	if err := kuddle.Unmarshal([]byte(in), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.N.Line != "kept" {
+		t.Errorf("delegated: got %q", d.N.Line)
+	}
+	out, err := kuddle.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Errorf("delegated: got %q, want %q", out, in)
+	}
+}

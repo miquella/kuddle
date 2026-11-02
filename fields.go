@@ -24,6 +24,7 @@ const (
 	fieldName                           // the node's name
 	fieldType                           // the node's type annotation
 	fieldComment                        // the comments above the node
+	fieldLineComment                    // the line comment on the node's line
 	fieldHeaderComment                  // the comments at the head of the node's children
 )
 
@@ -38,6 +39,7 @@ var fieldKinds = map[string]fieldKind{
 	"name":          fieldName,
 	"type":          fieldType,
 	"comment":       fieldComment,
+	"linecomment":   fieldLineComment,
 	"headercomment": fieldHeaderComment,
 }
 
@@ -69,6 +71,7 @@ type structFields struct {
 	restNodes     *field
 	name, typ     *field
 	comment       *field
+	lineComment   *field
 	headerComment *field
 }
 
@@ -168,7 +171,7 @@ func (fs *structFields) add(t reflect.Type, index []int) error {
 	return nil
 }
 
-const kindOptions = "child, arg, args, prop, props, entries, children, name, type, comment and headercomment"
+const kindOptions = "child, arg, args, prop, props, entries, children, name, type, comment, linecomment and headercomment"
 
 // index records f in the lookup fields of fs, checking that its type suits
 // its kind.
@@ -256,6 +259,11 @@ func (fs *structFields) index(f *field) error {
 			return single(&fs.comment)
 		}
 		return single(&fs.headerComment)
+	case fieldLineComment:
+		if t.Kind() != reflect.String && t != commentType {
+			return fmt.Errorf("a linecomment field must be a string or kdltext.Comment, not %s", t)
+		}
+		return single(&fs.lineComment)
 	case fieldType:
 		if t.Kind() != reflect.String && t != reflect.TypeFor[*string]() {
 			return fmt.Errorf("a type field must be a string or *string, not %s", t)
@@ -286,7 +294,7 @@ func checkNode(t reflect.Type) error {
 		case t == entryType:
 			return errors.New("an Entry is an argument, property or comment, not a node, and belongs in an entries field")
 		case t == commentType:
-			return errors.New("a kdltext.Comment is a comment, not a node, and belongs in a comment or headercomment field")
+			return errors.New("a kdltext.Comment is a comment, not a node, and belongs in a comment, linecomment or headercomment field")
 		case t.Kind() == reflect.Pointer:
 			t = t.Elem()
 		case isValueType(t) || hasMethods(t):

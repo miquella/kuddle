@@ -47,6 +47,7 @@ type randomNode struct {
 	Name  string            `kdl:",name"`
 	Above []kdltext.Comment `kdl:",comment"`
 	Head  []kdltext.Comment `kdl:",headercomment"`
+	Line  string            `kdl:",linecomment"`
 	Nodes []randomNode      `kdl:",children"`
 }
 

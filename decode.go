@@ -498,6 +498,16 @@ func (d *decoder) structNode(ns *nodeStart, v reflect.Value) error {
 		entries = slice(fs.entries)
 	}
 
+	// The line comment field holds the last line comment among the entries,
+	// which ends the node's line, or follows the '{' of its children. It is
+	// taken out of the entries field, if there is one.
+	var line reflect.Value
+	lineAt := -1
+	if fs.lineComment != nil {
+		line = fieldByIndex(v, fs.lineComment.index)
+		line.SetZero()
+	}
+
 	args := 0
 	for {
 		var err error
@@ -505,6 +515,12 @@ func (d *decoder) structNode(ns *nodeStart, v reflect.Value) error {
 		switch d.in.PeekKind() {
 		case kdltext.KindEntryComment:
 			t, _ := d.in.ReadToken()
+			if line.IsValid() && t.Comment.Kind == kdltext.CommentLine {
+				setComment(line, t.Comment)
+				if entries.IsValid() {
+					lineAt = entries.Len()
+				}
+			}
 			appendEntry(entries, Entry{Kind: EntryComment, Comment: t.Comment})
 		case kdltext.KindValue:
 			args++
@@ -536,6 +552,11 @@ func (d *decoder) structNode(ns *nodeStart, v reflect.Value) error {
 				err = d.unknownValue(ns, entry, v.Type())
 			}
 		default:
+			if lineAt >= 0 {
+				n := entries.Len()
+				reflect.Copy(entries.Slice(lineAt, n), entries.Slice(lineAt+1, n))
+				entries.SetLen(n - 1)
+			}
 			return d.structChildren(ns, v, fs, slice, &nodes, entries)
 		}
 		if err != nil {

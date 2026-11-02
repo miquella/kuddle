@@ -33,8 +33,8 @@ type Comment struct {
 	//
 	// To tidy comments, such as to put one space after each marker or to
 	// indent a comment of several lines to the depth of its node, format the
-	// document. The string form of a comment or headercomment struct field
-	// is trimmed when read and padded when written; a field of type Comment,
-	// or a slice of them, holds this literal text.
+	// document. The string form of a comment, headercomment or linecomment
+	// struct field is trimmed when read and padded when written; a field of
+	// type Comment, or a slice of them, holds this literal text.
 	Text string
 }

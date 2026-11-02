@@ -402,8 +402,9 @@ func structField(v reflect.Value, f *field) (reflect.Value, bool) {
 	return fv, true
 }
 
-// commentOf returns the comment held by v, a kdltext.Comment or a string of
-// line comment text, which is no comment if empty.
+// commentOf returns the comment held by v, the value of a linecomment field:
+// a kdltext.Comment, or a string of line comment text, which is no comment if
+// empty.
 func commentOf(v reflect.Value) kdltext.Comment {
 	if v.Type() == commentType {
 		return v.Interface().(kdltext.Comment)
@@ -477,6 +478,17 @@ func (e *encoder) structContents(v reflect.Value, root bool) error {
 		}
 		if err := e.mapProps(entries, fieldValue); err != nil {
 			return err
+		}
+	}
+	// The document has no line of its own for a line comment.
+	if fv, ok := field(fs.lineComment); ok && (e.open > 0 || e.inNode) {
+		if c := commentOf(fv); c.Kind != 0 {
+			if c.Kind != kdltext.CommentLine {
+				return e.error(fv.Type(), errors.New("a linecomment field must hold a line comment"))
+			}
+			if err := e.out.WriteToken(kdltext.Token{Kind: kdltext.KindEntryComment, Comment: c}); err != nil {
+				return e.error(fv.Type(), err)
+			}
 		}
 	}
 

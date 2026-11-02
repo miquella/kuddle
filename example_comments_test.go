@@ -7,13 +7,13 @@ import (
 	"github.com/miquella/kuddle"
 )
 
-// A struct can keep the comments of a document in comment and headercomment
-// fields.
+// A struct can keep the comments of a document in comment, linecomment and
+// headercomment fields.
 func Example_comments() {
 	const input = `// Settings for the web servers.
 
 // The main server.
-server a.example.com {
+server a.example.com { // on the line
     // These are its options.
 
     // It needs TLS.
@@ -27,6 +27,7 @@ server a.example.com {
 	type Server struct {
 		Host    string `kdl:",arg"`
 		Comment string `kdl:",comment"`       // "The main server."
+		Line    string `kdl:",linecomment"`   // "on the line"
 		Options string `kdl:",headercomment"` // "These are its options."
 		TLS     TLS    `kdl:"tls"`
 	}
@@ -41,6 +42,7 @@ server a.example.com {
 	}
 	fmt.Printf("%q\n", cfg.Header)
 	fmt.Printf("%q\n", cfg.Server.Comment)
+	fmt.Printf("%q\n", cfg.Server.Line)
 	fmt.Printf("%q\n", cfg.Server.Options)
 	fmt.Printf("%q\n", cfg.Server.TLS.Comment)
 
@@ -54,6 +56,7 @@ server a.example.com {
 	// Output:
 	// "Settings for the web servers."
 	// "The main server."
+	// "on the line"
 	// "These are its options."
 	// "It needs TLS."
 	// true

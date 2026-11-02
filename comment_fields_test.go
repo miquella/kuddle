@@ -14,7 +14,7 @@ const edge = `// Acme edge configuration
 // Maintained by the platform team
 
 // The public listener.
-listen :443
+listen :443 // TLS
 
 // Rolled out in March; see the runbook.
 
@@ -24,13 +24,13 @@ upstream app {
 
     // Primary.
     server a.example.com
-    server b.example.com
+    server b.example.com // standby
 }
 `
 
 // edgeWritten is edge as Marshal writes it: a comment goes right below the node
 // before it, so the blank line before "Rolled out" is not kept.
-var edgeWritten = strings.Replace(edge, "listen :443\n\n// Rolled out", "listen :443\n// Rolled out", 1)
+var edgeWritten = strings.Replace(edge, "// TLS\n\n// Rolled out", "// TLS\n// Rolled out", 1)
 
 type edgeConfig struct {
 	Header   []string     `kdl:",headercomment"`
@@ -41,6 +41,7 @@ type edgeConfig struct {
 type edgeListener struct {
 	Addr    string `kdl:",arg"`
 	Comment string `kdl:",comment"`
+	Line    string `kdl:",linecomment"`
 }
 
 type edgeUpstream struct {
@@ -53,19 +54,20 @@ type edgeUpstream struct {
 type edgeServer struct {
 	Host    string `kdl:",arg"`
 	Comment string `kdl:",comment"`
+	Line    string `kdl:",linecomment"`
 }
 
 func TestCommentFieldsEdge(t *testing.T) {
 	want := edgeConfig{
 		Header: []string{"Acme edge configuration\nMaintained by the platform team"},
-		Listen: edgeListener{Addr: ":443", Comment: "The public listener."},
+		Listen: edgeListener{Addr: ":443", Comment: "The public listener.", Line: "TLS"},
 		Upstream: edgeUpstream{
 			Name:    "app",
 			Above:   []string{"Rolled out in March; see the runbook.", "Backends for the app tier."},
 			Opening: []string{"Keep this list sorted by host."},
 			Servers: []edgeServer{
 				{Host: "a.example.com", Comment: "Primary."},
-				{Host: "b.example.com"},
+				{Host: "b.example.com", Line: "standby"},
 			},
 		},
 	}
@@ -102,8 +104,8 @@ func TestCommentFieldsEdge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	moved := strings.Replace(edgeWritten, "    // Primary.\n    server a.example.com\n    server b.example.com\n",
-		"    server b.example.com\n    // Primary.\n    server a.example.com\n", 1)
+	moved := strings.Replace(edgeWritten, "    // Primary.\n    server a.example.com\n    server b.example.com // standby\n",
+		"    server b.example.com // standby\n    // Primary.\n    server a.example.com\n", 1)
 	if string(out) != moved {
 		t.Errorf("swapped servers: got\n%s\nwant\n%s", out, moved)
 	}
@@ -338,17 +340,18 @@ func TestCommentFieldsSlashdash(t *testing.T) {
 func TestCommentFieldsEmptyBlock(t *testing.T) {
 	type node struct {
 		Head []string `kdl:",headercomment"`
+		Line string   `kdl:",linecomment"`
 	}
 	var v struct {
 		A node `kdl:"a"`
 		B node `kdl:"b"`
 		C node `kdl:"c"`
 	}
-	in := "a {\n    // One.\n\n    // Two.\n}\nb\nc {\n}\n"
+	in := "a { // on the line\n    // One.\n\n    // Two.\n}\nb\nc {\n}\n"
 	if err := kuddle.Unmarshal([]byte(in), &v); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"One.", "Two."}; !reflect.DeepEqual(v.A.Head, want) {
+	if want := []string{"One.", "Two."}; !reflect.DeepEqual(v.A.Head, want) || v.A.Line != "on the line" {
 		t.Errorf("a: got %+v", v.A)
 	}
 	if v.B.Head != nil || v.C.Head != nil {

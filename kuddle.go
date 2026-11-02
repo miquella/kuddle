@@ -104,57 +104,64 @@
 //
 // A field has one of these kinds:
 //
-//   - child, the default: the child node with the name. A slice field without
-//     methods, other than a []byte, holds every child node with the name, one
-//     per element, but if its elements are of a value type, they hold the
-//     arguments of each node, and if they are empty interfaces, each node's
-//     children too. Marshal writes these as the arguments and children of a
-//     single node, and writes no node for an empty slice.
+//   - child (the default): the child node with the name. A slice field holds
+//     every child node with the name, one per element, unless it is a []byte
+//     or has methods. If its elements are of a value type, they hold the
+//     arguments of those nodes instead, and if they are empty interfaces, the
+//     nodes' children too. Marshal writes them back as the arguments and
+//     children of a single node, and writes no node for an empty slice.
 //   - arg: the next argument, in the order of the arg fields.
-//   - args: the remaining arguments, after those of the arg fields, as a
-//     slice.
-//   - prop: the property with the name. Of repeated properties, the last is
-//     used.
-//   - props: the remaining properties, those without a prop field, as a map
-//     keyed by name.
-//   - entries: the remaining arguments and properties, those without an arg
-//     or prop field, and the node's comment entries (see Node.Entries), in
-//     order, as a []Entry. Marshal writes them after the arguments of the arg
-//     fields and before the properties of the prop fields. A struct with an
-//     entries field can't have an args or props field.
-//   - children: the remaining child nodes, those without a child field, as a
-//     slice, or as a map keyed by name.
+//   - args: the arguments after those of the arg fields, as a slice.
+//   - prop: the property with the name. If the property is repeated, the last
+//     one wins.
+//   - props: the properties that have no prop field, as a map keyed by name.
+//   - entries: the arguments and properties that have no arg or prop field,
+//     and the node's comment entries (see Node.Entries), in order, as a
+//     []Entry. Marshal writes them after the arguments of the arg fields and
+//     before the properties of the prop fields. A struct with an entries
+//     field can't have an args or props field.
+//   - children: the child nodes that have no child field, as a slice or as a
+//     map keyed by name.
 //   - name: the node's name, as a string.
-//   - type: the node's type annotation, as a string, "" for none, or as a
-//     *string, nil for none, so that an empty annotation can be told apart
-//     from none.
+//   - type: the node's type annotation, as a string ("" for none), or as a
+//     *string (nil for none) to tell an empty annotation apart from none.
 //   - comment: the comments above the node, as a string, a []string or a
-//     []kdltext.Comment (see Comments). The document has none.
+//     []kdltext.Comment (see Comments). The document has no comment.
 //   - headercomment: the comments at the head of the node's contents, before
 //     its first child, in the same types as comment (see Comments). For the
 //     document, they are the comments before its first node.
+//   - linecomment: the line comment at the end of the node's line, after its
+//     arguments and properties or after the '{' of its children, as a string
+//     of its text, or as a literal kdltext.Comment, which also tells an empty
+//     line comment ("//") apart from none. If there are several, as on lines
+//     continued with '\', the last one wins. Block comments, and comments
+//     after the closing '}', are ignored. Marshal writes a non-empty string,
+//     with a space after the "//", or a kdltext.Comment that isn't zero, after
+//     the node's arguments and properties, and it must be a single line
+//     comment. If the struct also has an entries field, the line comment is
+//     left out of the entries. The document has no line comment.
 //
 // The arg, args, prop and props fields hold values of value types, or of types
 // with methods (see Custom marshaling), other than Document, which holds only
 // nodes. A child or children field can't hold an Entry or a kdltext.Comment,
 // even as the elements of a slice or map: they are entries and comments
-// rather than nodes, and are held by the entries, comment and headercomment
-// fields. The keys of the maps of props and children fields are as for a map.
-// The omitzero option has Marshal leave the field out if it is zero, as
-// reported by its IsZero method if it has one.
+// rather than nodes, and are held by the entries, comment, linecomment and
+// headercomment fields. The keys of the maps of props and children fields are
+// as for a map. The omitzero option has Marshal leave the field out if it is
+// zero, as reported by its IsZero method if it has one.
 //
 // A field with the tag "-" is ignored, and so are unexported fields. The
 // fields of an embedded struct, or pointer to a struct, without a tag are
 // treated as fields of the outer struct. Names must be unique among the child
 // fields, and among the prop fields, and a struct can have only one field each
-// of args, props, entries, children, name, type, comment and headercomment.
-// Unmarshal reports an error for the arguments, properties and children that
-// have no field, unless DiscardUnknown is set.
+// of args, props, entries, children, name, type, comment, linecomment and
+// headercomment. Unmarshal reports an error for the arguments, properties and
+// children that have no field, unless DiscardUnknown is set.
 //
 // # Comments
 //
-// A struct can keep the comments of a document in its fields. There are two
-// kinds of field for this: comment and headercomment.
+// A struct can keep the comments of a document in its fields. There are three
+// kinds of field for this: comment, headercomment and linecomment.
 //
 // The comments are kept in blocks. A block is a run of line comments on
 // consecutive lines, or a single block comment. A blank line starts a new
@@ -165,12 +172,12 @@
 // Slash-dashed parts (/-) are not comments for these fields, and are never
 // kept.
 //
-// Here is a document with comments in three places:
+// Here is a document with a comment in each of the three places:
 //
 //	// Settings for the web servers.
 //
 //	// The main server.
-//	server a.example.com {
+//	server a.example.com { // on the line
 //	    // These are its options.
 //
 //	    // It needs TLS.
@@ -187,6 +194,7 @@
 //	type Server struct {
 //		Host    string `kdl:",arg"`
 //		Comment string `kdl:",comment"`       // "The main server."
+//		Line    string `kdl:",linecomment"`   // "on the line"
 //		Options string `kdl:",headercomment"` // "These are its options."
 //		TLS     TLS    `kdl:"tls"`
 //	}
@@ -206,6 +214,9 @@
 //     child. A block that is attached to the first child is not one of them:
 //     it is the child's own comment. If the node has no children, they are all
 //     of the blocks inside its braces.
+//   - A linecomment field holds the comment on the node's own line, after its
+//     arguments and properties or after its '{'. It is a single line comment,
+//     so it holds a string, or a single [kdltext.Comment].
 //
 // Each block goes to only one field. If a struct has a headercomment field, it
 // takes the blocks at the top of its children, and the comment field of its
@@ -276,27 +287,43 @@
 // or map type with the methods is a single node. That way its values always
 // round-trip through the same methods.
 //
-// For a node, Marshal and Unmarshal write and read its KindNode token, with a
-// struct's name, type and comment fields as for any value of the type, and its
-// KindEnd token, and the methods the node's contents between them: its
-// arguments, properties and children. UnmarshalKDL must read all of the
-// contents, and stop before the KindEnd token. At the top level, the contents
-// are the document's nodes. For an argument or property, the methods write and
-// read the single KindValue token of the value, after the KindProp token of a
-// property. Marshal and Unmarshal report an error if a method writes or reads
-// more or less than that.
+// For a node, Marshal and Unmarshal handle its KindNode and KindEnd tokens,
+// along with a struct's name, type and comment fields, and the methods
+// handle the node's contents in between: its arguments, properties and
+// children. UnmarshalKDL must read all of the contents and stop before the
+// KindEnd token. At the top level, the contents are the document's nodes. For
+// an argument or property, the methods write and read the value's single
+// KindValue token, which follows the KindProp token for a property. Marshal
+// and Unmarshal report an error if a method writes or reads more or less than
+// that.
+//
+// A node's contents include its comments, which the methods handle
+// themselves: KindEntryComment tokens among the arguments and properties and
+// after the children, and KindComment tokens (comment nodes) between the
+// children. UnmarshalKDL must read or skip them like any other token. A
+// method that reads arguments while PeekKind reports KindValue stops at a
+// comment among them, so it reports an error if more arguments follow.
+// Comment tokens left unread just before the KindEnd token are skipped. Only
+// the comment field is handled along with the KindNode token: the comments
+// above the node are set before UnmarshalKDL is called, and written before
+// the KindNode token. For a linecomment field, UnmarshalKDL takes the text of
+// the last KindEntryComment token among the entries whose Comment is a
+// kdltext.CommentLine, and MarshalKDL writes one after the arguments and
+// properties. For a headercomment field, UnmarshalKDL takes the KindComment
+// tokens before the first child, and MarshalKDL writes them before its
+// children. Delegating to MarshalEncode or UnmarshalDecode handles comments
+// as the default rules do.
 //
 // A method may return [errors.ErrUnsupported] without writing or reading
-// anything, though it may peek at the next token, for the value to be
+// anything (though it may peek at the next token) to have the value
 // marshaled by the default rules, as if its type had no methods. Returning it
-// after writing or reading anything is an error. For a node, a method can also
-// delegate the node's contents to the default rules, by calling
+// after writing or reading anything is an error. For a node, a method can
+// also hand the node's contents to the default rules by calling
 // [MarshalEncode] or [UnmarshalDecode] with its value converted to a type
-// without the methods, such as plain(v) or (*plain)(v), where plain is defined
-// by type plain T. For a single value, it must not, since those functions
-// write and read a node's contents, not one value: it returns
-// errors.ErrUnsupported instead, or writes or reads the KindValue token
-// itself.
+// without the methods, such as plain(v) or (*plain)(v), given type plain T.
+// It must not do this for a single value, since those functions handle a
+// node's contents rather than one value. Instead, it returns
+// errors.ErrUnsupported, or writes or reads the KindValue token itself.
 //
 // The methods may have value or pointer receivers. Unmarshal calls them
 // through a pointer to the value it decodes into. Marshal calls methods with
@@ -320,11 +347,11 @@
 // methods can't be called, such as for a Document held in an interface, the
 // tag on its Nodes field still has Marshal write the nodes.
 //
-// A [Node] holds a node as it is: its name, type annotation, entries, children
-// and comment, where an [Entry] is an argument, property or comment. Marshal
-// and Unmarshal write and read it themselves. Unmarshaling into any other Go
-// value passes over comments, but for the entries, comment and headercomment
-// fields of a struct.
+// A [Node] holds a node as written: its name, type annotation, entries,
+// children and comment, where an [Entry] is an argument, property or comment.
+// Marshal and Unmarshal handle a Node directly. Unmarshaling into any other
+// Go value skips comments, except for a struct's entries, comment,
+// linecomment and headercomment fields.
 //
 // [Document.From] and [Document.To] convert between Go values and Documents
 // as Marshal and Unmarshal convert between Go values and KDL text, by the

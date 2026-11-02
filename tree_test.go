@@ -81,6 +81,7 @@ type fromToNode struct {
 // its own: an entries field, and comment fields of kdltext.Comment.
 type fromToEntries struct {
 	Comment kdltext.Comment `kdl:",comment"`
+	Line    kdltext.Comment `kdl:",linecomment"`
 	Arg     int             `kdl:",arg"`
 	Rest    []kuddle.Entry  `kdl:",entries"`
 }
@@ -198,6 +199,7 @@ func TestDocumentFrom(t *testing.T) {
 	checkFrom(t, fromToTestMethods(), kdltext.WithVersion(kdltext.V1))
 	checkFrom(t, map[string]fromToEntries{"n": {
 		Comment: kdltext.Comment{Kind: kdltext.CommentBlock, Text: "c"},
+		Line:    kdltext.Comment{Kind: kdltext.CommentLine, Text: "line"},
 		Arg:     1,
 		Rest: []kuddle.Entry{
 			kuddle.Prop("a", kdltext.Int(2)),
