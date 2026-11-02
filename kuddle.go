@@ -71,8 +71,13 @@
 //   - A pointer is whatever it points to.
 //
 // #null sets a pointer to nil, a kdltext.Value to #null, and any other Go
-// value to its zero value, without calling UnmarshalText. Marshal writes a nil
-// pointer or interface as #null.
+// value to its zero value, without calling UnmarshalText. Marshal writes a
+// nil pointer or interface as #null.
+//
+// The default rules ignore the type annotations of values.
+// [AnnotationUnmarshalers] provides built-in unmarshalers for some of the
+// annotations that the KDL spec reserves, such as (duration)"PT1H30M" for a
+// time.Duration.
 //
 // # Struct tags
 //
