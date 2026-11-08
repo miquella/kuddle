@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("A/-{\n \v}/-{\n}")
+uint16(48682)
