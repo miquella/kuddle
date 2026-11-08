@@ -418,8 +418,7 @@ func TestInputOffset(t *testing.T) {
 // TestDecodeConformance checks that the decoder accepts the valid inputs of
 // the KDL conformance tests, both with the suite's version given and
 // detected, and rejects the invalid ones. Invalid inputs are only checked with
-// the version given, since many are valid in the other version. Cases that
-// contradict the spec are skipped.
+// the version given, since many are valid in the other version.
 func TestDecodeConformance(t *testing.T) {
 	for _, v := range []kdltext.Version{kdltext.V1, kdltext.V2} {
 		cases, err := kdltest.Cases(int(v))
@@ -428,9 +427,6 @@ func TestDecodeConformance(t *testing.T) {
 		}
 		for _, c := range cases {
 			t.Run(fmt.Sprintf("v%d/%s", v, c.Name), func(t *testing.T) {
-				if c.Divergence != "" {
-					t.Skip(c.Divergence)
-				}
 				for _, detect := range []bool{false, true} {
 					if detect && c.Fail {
 						continue

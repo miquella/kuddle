@@ -11,8 +11,7 @@ import (
 
 // TestConformance lexes the valid inputs and expected outputs of the KDL
 // conformance tests. Failing inputs are left to the parser's tests, since
-// most of them are rejected by the parser rather than the lexer. Cases that
-// contradict the spec are skipped.
+// most of them are rejected by the parser rather than the lexer.
 func TestConformance(t *testing.T) {
 	for _, v := range []lexer.Version{lexer.V1, lexer.V2} {
 		cases, err := kdltest.Cases(int(v))
@@ -24,9 +23,6 @@ func TestConformance(t *testing.T) {
 				continue
 			}
 			t.Run(fmt.Sprintf("v%d/%s", v, c.Name), func(t *testing.T) {
-				if c.Divergence != "" {
-					t.Skip(c.Divergence)
-				}
 				for part, doc := range map[string][]byte{"input": c.Input, "expected": c.Expected} {
 					if _, _, err := lexAll(bytes.NewReader(doc), v); err != nil {
 						t.Errorf("%s: %v", part, err)

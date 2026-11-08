@@ -18,15 +18,6 @@ type Case struct {
 	Input    []byte
 	Expected []byte // the input after parsing and printing; nil if Fail
 	Fail     bool   // whether the input must fail to parse
-
-	// Divergence explains how the case contradicts the spec, which takes
-	// precedence (see the test suite's README). It is empty for most cases.
-	Divergence string
-}
-
-// divergences lists the cases that contradict the spec.
-var divergences = map[string]string{
-	"v2/zero_space_before_slashdash_arg_fail.kdl": "2.0.0 requires whitespace before a slash-dashed argument; the current draft allows none, as kuddle does",
 }
 
 // Cases returns the test cases for KDL version 1 or 2.
@@ -50,7 +41,7 @@ func Cases(version int) ([]Case, error) {
 	// _fail suffix, but the v1 suite predates that convention.
 	var cs []Case
 	for _, e := range entries {
-		c := Case{Name: e.Name(), Divergence: divergences[fmt.Sprintf("v%d/%s", version, e.Name())]}
+		c := Case{Name: e.Name()}
 		if c.Input, err = fs.ReadFile(cases, path.Join(dir, "input", c.Name)); err != nil {
 			return nil, err
 		}

@@ -33,9 +33,6 @@ func TestConformance(t *testing.T) {
 		suite := suiteOptions(v)
 		for _, c := range cases {
 			t.Run(fmt.Sprintf("v%d/%s", v, c.Name), func(t *testing.T) {
-				if c.Divergence != "" {
-					t.Skip(c.Divergence)
-				}
 				var doc kuddle.Document
 				err := kuddle.Unmarshal(c.Input, &doc, suite)
 				if c.Fail {
