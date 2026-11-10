@@ -58,7 +58,9 @@ type Decoder struct {
 	// node being emitted, they are its comment entries, which are held while
 	// an entry is being read, so that they come after it. A slash-dashed part
 	// is recorded in raw while slash is positive, and becomes one comment.
-	lookRaw     []byte // the raw text of look
+	lookRaw     []byte       // the raw text of look
+	strs        *stringCache // shares the strings read, once there are enough to share
+	strsRead    int          // the number of strings read, until strs is made
 	mode        commentMode
 	pending     []posComment
 	joinable    bool // whether a line comment on the next line joins the last pending comment
@@ -807,7 +809,10 @@ func (d *Decoder) peek() (lexToken, error) {
 	d.lookRaw = append(d.lookRaw[:0], t.Raw()...)
 	var src string
 	switch t.Kind {
-	case lexer.Ident, lexer.String, lexer.RawString, lexer.Number:
+	case lexer.Ident, lexer.String, lexer.RawString:
+		src = d.shareString(d.lookRaw)
+	case lexer.Number:
+		// Numbers are rarely repeated.
 		src = string(d.lookRaw)
 	}
 	pos := Position(d.lex.Pos())
