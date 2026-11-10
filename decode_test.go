@@ -137,6 +137,57 @@ map a=1 { b 2; c 3 4 }
 	}
 }
 
+// TestUnmarshalDeep decodes nodes nested deeper than the decoder's initial
+// room for node headers, with siblings before and after each child, to check
+// that headers stay intact as that room grows and is reused.
+func TestUnmarshalDeep(t *testing.T) {
+	type nested struct {
+		N    int     `kdl:",arg"`
+		Pre  []int   `kdl:"pre"`
+		Next *nested `kdl:"n"`
+		Post []int   `kdl:"post"`
+	}
+	const depth = 70
+	var b strings.Builder
+	for i := range depth {
+		fmt.Fprintf(&b, "n %d {\n pre %d\n", i, i)
+	}
+	for i := depth - 1; i >= 0; i-- {
+		fmt.Fprintf(&b, " post %d\n}\n", i)
+	}
+	var root struct {
+		Next *nested `kdl:"n"`
+	}
+	if err := kuddle.Unmarshal([]byte(b.String()), &root); err != nil {
+		t.Fatal(err)
+	}
+	n := root.Next
+	for i := range depth {
+		if n == nil {
+			t.Fatalf("depth %d: missing node", i)
+		}
+		if n.N != i || !slices.Equal(n.Pre, []int{i}) || !slices.Equal(n.Post, []int{i}) {
+			t.Fatalf("depth %d: got %d pre=%v post=%v", i, n.N, n.Pre, n.Post)
+		}
+		n = n.Next
+	}
+	if n != nil {
+		t.Errorf("unexpected node below depth %d", depth)
+	}
+
+	// An error deep in the document reports where its node is.
+	bad := strings.Replace(b.String(), fmt.Sprintf(" pre %d\n", depth-1), " pre x\n", 1)
+	err := kuddle.Unmarshal([]byte(bad), &root)
+	var se *kuddle.SemanticError
+	if !errors.As(err, &se) {
+		t.Fatalf("got %v, want a SemanticError", err)
+	}
+	// Each level takes two lines, and the bad "pre" is the second of the last.
+	if want := 2 * depth; se.Pos.Line != want {
+		t.Errorf("error at line %d, want %d: %v", se.Pos.Line, want, err)
+	}
+}
+
 func TestUnmarshalTopLevel(t *testing.T) {
 	input := []byte("a 1\nb 2\n")
 

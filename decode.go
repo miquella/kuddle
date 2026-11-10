@@ -87,6 +87,13 @@ type decoder struct {
 	path   []pathSegment // the nodes being decoded
 	fn     *funcs        // the functions of the options, or nil
 
+	// starts holds the nodeStart of each node being decoded, one for each
+	// segment of path, so that reading a node doesn't allocate one. A
+	// nodeStart never changes once it is read, so when starts is full, a
+	// larger array replaces it without invalidating the pointers already
+	// given out: they keep the old array alive, with the same contents.
+	starts []nodeStart
+
 	// above holds the comments read since the last node ended or began, which
 	// come before the next node: its comment field holds them, or, for the
 	// first child of a node, the header comment field of that node does. It is
@@ -125,13 +132,23 @@ type nodeStart struct {
 // the path. The caller must call leave once the child is decoded.
 func (d *decoder) child() *nodeStart {
 	t, _ := d.in.ReadToken()
-	c := &nodeStart{typ: t.Value.Type, name: t.Name(), pos: d.in.Pos(), above: d.above, comment: t.Comment}
+	if len(d.starts) == cap(d.starts) {
+		d.starts = append(make([]nodeStart, 0, max(16, 2*cap(d.starts))), d.starts...)
+	}
+	d.starts = append(d.starts, nodeStart{typ: t.Value.Type, name: t.Name(), pos: d.in.Pos(), above: d.above, comment: t.Comment})
 	d.above = d.above[:0]
+	c := &d.starts[len(d.starts)-1]
 	d.path = append(d.path, pathSegment{c.name, -1})
 	return c
 }
 
-func (d *decoder) leave() { d.path = d.path[:len(d.path)-1] }
+// leave ends the child returned by the last call to child that hasn't been
+// left. Its nodeStart must not be used afterwards: the next child reuses
+// it.
+func (d *decoder) leave() {
+	d.path = d.path[:len(d.path)-1]
+	d.starts = d.starts[:len(d.starts)-1]
+}
 
 // element records in the path that the child being decoded is element i of
 // a slice or array.
