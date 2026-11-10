@@ -238,7 +238,7 @@ Commonly used options:
 | `kdltext.WithVersion`               | read or write only v1 or v2 (detected / v2 by default)   |
 | `kdltext.WithIndent`                | indentation of children (four spaces by default)         |
 | `kdltext.WithNewline`               | line endings (`\n` by default)                           |
-| `kdltext.DiscardComments`           | leave out comments when writing                          |
+| `kdltext.DiscardComments`           | leave out comments when reading or writing               |
 | `kdltext.RejectDuplicateProperties` | error for a repeated property                            |
 | `kdltext.WithMaxTokenSize`          | limit the size of a single token, for untrusted input    |
 

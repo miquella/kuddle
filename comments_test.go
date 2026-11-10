@@ -26,6 +26,69 @@ server main /* name */ /- "old" { // the main one
 // The end.
 `
 
+// TestUnmarshalDiscardComments checks that unmarshaling with DiscardComments
+// leaves comment fields empty, and a Document without comments.
+func TestUnmarshalDiscardComments(t *testing.T) {
+	type server struct {
+		Name    string `kdl:",arg"`
+		Comment string `kdl:",comment"`
+		Line    string `kdl:",linecomment"`
+	}
+	type config struct {
+		Server server `kdl:"server"`
+	}
+
+	var with, without config
+	if err := kuddle.Unmarshal([]byte(commented), &with, kuddle.DiscardUnknown(true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := kuddle.Unmarshal([]byte(commented), &without, kuddle.DiscardUnknown(true), kdltext.DiscardComments(true)); err != nil {
+		t.Fatal(err)
+	}
+	if with.Server.Comment == "" || with.Server.Line == "" {
+		t.Fatalf("the test document has no comments to discard: %+v", with.Server)
+	}
+	if want := (server{Name: "main"}); without.Server != want {
+		t.Errorf("got %+v, want %+v", without.Server, want)
+	}
+
+	var doc, discarded kuddle.Document
+	if err := kuddle.Unmarshal([]byte(commented), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := kuddle.Unmarshal([]byte(commented), &discarded, kdltext.DiscardComments(true)); err != nil {
+		t.Fatal(err)
+	}
+	want, err := kuddle.Marshal(doc, kdltext.DiscardComments(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := kuddle.Marshal(discarded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) || strings.Contains(string(got), "//") || strings.Contains(string(got), "/*") {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestCommentFieldsDiscard(t *testing.T) {
+	var v edgeConfig
+	if err := kuddle.Unmarshal([]byte(edge), &v, kdltext.DiscardComments(true)); err != nil {
+		t.Fatal(err)
+	}
+	if v.Header != nil || v.Listen.Comment != "" || v.Upstream.Above != nil || v.Upstream.Opening != nil {
+		t.Errorf("got %+v", v)
+	}
+	out, err := kuddle.Marshal(edgeConfig{Header: []string{"x"}, Listen: edgeListener{Comment: "y"}}, kdltext.DiscardComments(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "listen \"\"\nupstream \"\"\n"; strings.Contains(string(out), "//") {
+		t.Errorf("got\n%s\nwant no comments, such as\n%s", out, want)
+	}
+}
+
 func TestDocumentRoundTrip(t *testing.T) {
 	var doc kuddle.Document
 	if err := kuddle.Unmarshal([]byte(commented), &doc); err != nil {

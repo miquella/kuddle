@@ -23,6 +23,10 @@ type Decoder struct {
 	// v1, slash-dashed or not (see RejectMultipleChildrenBlocks).
 	strictChildren bool
 
+	// discardComments is whether comments, and slash-dashed parts, are read
+	// without being kept (see DiscardComments).
+	discardComments bool
+
 	// props holds the names of the properties of the node whose entries are
 	// being parsed, if a node may not repeat a property (see
 	// RejectDuplicateProperties); it is nil otherwise.
@@ -123,8 +127,8 @@ type level struct {
 }
 
 // NewDecoder returns a Decoder reading from r. It accepts the options
-// WithVersion, WithMaxTokenSize, RejectMultipleChildrenBlocks and
-// RejectDuplicateProperties.
+// WithVersion, WithMaxTokenSize, RejectMultipleChildrenBlocks,
+// RejectDuplicateProperties and DiscardComments.
 //
 // If r is a *bytes.Buffer, the Decoder reads directly from its contents,
 // without copying them, and the buffer must not be written to while the
@@ -134,10 +138,11 @@ func NewDecoder(r io.Reader, opts ...Options) *Decoder {
 	l := lexer.New(r, lexer.Version(o.Version))
 	l.SetMaxTokenSize(o.MaxTokenSize)
 	d := &Decoder{
-		lex:            l,
-		opts:           o,
-		strictChildren: o.Flags&kdlopts.RejectMultipleChildrenBlocks != 0,
-		lineStart:      true,
+		lex:             l,
+		opts:            o,
+		strictChildren:  o.Flags&kdlopts.RejectMultipleChildrenBlocks != 0,
+		discardComments: o.Flags&kdlopts.DiscardComments != 0,
+		lineStart:       true,
 	}
 	if o.Flags&kdlopts.RejectDuplicateProperties != 0 {
 		d.props = make(map[string]struct{})
@@ -820,6 +825,8 @@ func (d *Decoder) advance() {
 		d.read = d.look.end
 	}
 	switch {
+	case d.discardComments && (d.slash > 0 || k == lexer.LineComment || k == lexer.BlockComment):
+		// Nothing is kept: not the text of a comment or slash-dashed part.
 	case d.slash > 0:
 		d.raw = append(d.raw, d.lookRaw...)
 		switch k {
@@ -915,7 +922,7 @@ func (d *Decoder) beginSlashdash() {
 }
 
 func (d *Decoder) endSlashdash() {
-	if d.slash--; d.slash == 0 {
+	if d.slash--; d.slash == 0 && !d.discardComments {
 		end := d.slashPos.Offset + int64(len(bytes.TrimRightFunc(d.raw, isSpace)))
 		d.addComment(Comment{Kind: CommentSlashdash, Text: slashdashText(d.raw)}, d.slashPos, end)
 	}

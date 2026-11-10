@@ -45,6 +45,7 @@
 //   - [WithMaxTokenSize]: a limit on the input held to read one token.
 //   - [RejectDuplicateProperties]: an error for a repeated property.
 //   - [RejectMultipleChildrenBlocks]: a stricter grammar for KDL v1.
+//   - [DiscardComments]: no comment tokens, and no comments on nodes.
 //
 // An Encoder accepts:
 //
@@ -137,9 +138,11 @@ func QuoteIdentifiers(v bool) Options {
 	return kdlopts.Bool(kdlopts.QuoteIdentifiers, v)
 }
 
-// DiscardComments sets whether an Encoder leaves out comments: comment nodes,
-// comment entries, and the comments of nodes. It applies to both KDL
-// versions.
+// DiscardComments sets whether comments are left out: of what an Encoder
+// writes, and of the tokens a Decoder reads. That is comment nodes, comment
+// entries, and the comments of nodes, including slash-dashed parts. A Decoder
+// that discards comments doesn't copy their text, so it is faster on documents
+// that have them. It applies to both KDL versions.
 func DiscardComments(v bool) Options {
 	return kdlopts.Bool(kdlopts.DiscardComments, v)
 }
